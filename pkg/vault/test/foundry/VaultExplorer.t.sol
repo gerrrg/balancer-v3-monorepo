@@ -89,10 +89,10 @@ contract VaultExplorerTest is BaseVaultTest {
 
         (daiIdx, usdcIdx) = getSortedIndexes(address(dai), address(usdc));
 
-        rateProviderDai = new RateProviderMock();
+        rateProviderDai = deployRateProviderMock();
         rateProviderDai.mockRate(DAI_MOCK_RATE);
 
-        rateProviderUsdc = new RateProviderMock();
+        rateProviderUsdc = deployRateProviderMock();
         rateProviderUsdc.mockRate(USDC_MOCK_RATE);
 
         rateProviders = new IRateProvider[](2);
@@ -107,7 +107,7 @@ contract VaultExplorerTest is BaseVaultTest {
 
         feeControllerAuth = IAuthentication(address(feeController));
 
-        explorer = new VaultExplorer(vault);
+        explorer = deployVaultExplorer(vault);
     }
 
     function testGetVaultContracts() public view {
@@ -144,6 +144,13 @@ contract VaultExplorerTest is BaseVaultTest {
         assertEq(explorer.getNonzeroDeltaCount(), 47, "Wrong non-zero delta count");
     }
 
+    function testAddLiquidityFlag() public {
+        assertFalse(explorer.getAddLiquidityCalledFlag(pool), "Add Liquidity flag set");
+
+        vault.manualSetAddLiquidityCalledFlag(pool, true);
+        assertTrue(explorer.getAddLiquidityCalledFlag(pool), "Add Liquidity flag not set");
+    }
+
     function testGetTokenDelta() public {
         assertEq(vault.getTokenDelta(dai), 0, "Initial token delta non-zero (Vault)");
         assertEq(explorer.getTokenDelta(dai), 0, "Initial token delta non-zero (Explorer)");
@@ -174,7 +181,7 @@ contract VaultExplorerTest is BaseVaultTest {
         assertTrue(vault.isPoolRegistered(pool), "Default pool not registered (Vault)");
         assertTrue(explorer.isPoolRegistered(pool), "Default pool not registered (Explorer)");
 
-        address newPool = address(new PoolMock(IVault(address(vault)), "ERC20 Pool", "ERC20POOL"));
+        address newPool = address(deployPoolMock(IVault(address(vault)), "ERC20 Pool", "ERC20POOL"));
 
         assertFalse(vault.isPoolRegistered(newPool), "New pool magically registered (Vault)");
         assertFalse(explorer.isPoolRegistered(newPool), "New pool magically registered (Explorer)");
@@ -189,7 +196,7 @@ contract VaultExplorerTest is BaseVaultTest {
         assertTrue(vault.isPoolInitialized(pool), "Default pool not initialized (Vault)");
         assertTrue(explorer.isPoolInitialized(pool), "Default pool not initialized (Explorer)");
 
-        address newPool = address(new PoolMock(IVault(address(vault)), "ERC20 Pool", "ERC20POOL"));
+        address newPool = address(deployPoolMock(IVault(address(vault)), "ERC20 Pool", "ERC20POOL"));
 
         _registerPool(newPool, true);
 
@@ -240,7 +247,7 @@ contract VaultExplorerTest is BaseVaultTest {
         for (uint256 i = 0; i < decimalScalingFactors.length; ++i) {
             assertEq(
                 decimalScalingFactors[i],
-                10 ** (18 + tokenDecimalDiffs[i]),
+                10 ** tokenDecimalDiffs[i],
                 string.concat("decimalScalingFactors of token", Strings.toString(i), "should match tokenDecimalDiffs")
             );
 
@@ -280,7 +287,7 @@ contract VaultExplorerTest is BaseVaultTest {
         for (uint256 i = 0; i < tokens.length; ++i) {
             assertEq(
                 poolData.decimalScalingFactors[i],
-                10 ** (18 + tokenDecimalDiffs[i]),
+                10 ** tokenDecimalDiffs[i],
                 string.concat("decimalScalingFactors of token ", Strings.toString(i), " should match tokenDecimalDiffs")
             );
 
@@ -416,7 +423,7 @@ contract VaultExplorerTest is BaseVaultTest {
     function testTotalSupply() public view {
         uint256 vaultTotalSupply = vault.totalSupply(address(pool));
 
-        assertTrue(vaultTotalSupply > 0, "Vault total supply is zero");
+        assertGt(vaultTotalSupply, 0, "Vault total supply is zero");
 
         assertEq(explorer.totalSupply(address(pool)), vaultTotalSupply, "Total supply mismatch");
     }
@@ -424,7 +431,7 @@ contract VaultExplorerTest is BaseVaultTest {
     function testBalanceOf() public view {
         uint256 bptBalance = vault.balanceOf(address(pool), lp);
 
-        assertTrue(bptBalance > 0, "LP's BPT balance is zero");
+        assertGt(bptBalance, 0, "LP's BPT balance is zero");
 
         assertEq(explorer.balanceOf(address(pool), lp), bptBalance, "BPT balance mismatch");
     }
@@ -502,7 +509,7 @@ contract VaultExplorerTest is BaseVaultTest {
 
         assertEq(explorerSwapFeePercentage, 0, "Non-zero initial swap fee");
 
-        assertTrue(swapFeePercentage > 0, "Swap fee is zero");
+        assertGt(swapFeePercentage, 0, "Swap fee is zero");
         vault.manualSetStaticSwapFeePercentage(pool, swapFeePercentage);
 
         explorerSwapFeePercentage = explorer.getStaticSwapFeePercentage(pool);
@@ -515,13 +522,13 @@ contract VaultExplorerTest is BaseVaultTest {
 
         assertEq(vaultRoleAccounts.poolCreator, lp, "Pool creator is not LP");
 
-        assertEq(vaultRoleAccounts.pauseManager, explorerRoleAccounts.pauseManager, "Pause manager mmismatch");
-        assertEq(vaultRoleAccounts.swapFeeManager, explorerRoleAccounts.swapFeeManager, "Swap fee manager mmismatch");
-        assertEq(vaultRoleAccounts.poolCreator, explorerRoleAccounts.poolCreator, "Pool creator mmismatch");
+        assertEq(vaultRoleAccounts.pauseManager, explorerRoleAccounts.pauseManager, "Pause manager mismatch");
+        assertEq(vaultRoleAccounts.swapFeeManager, explorerRoleAccounts.swapFeeManager, "Swap fee manager mismatch");
+        assertEq(vaultRoleAccounts.poolCreator, explorerRoleAccounts.poolCreator, "Pool creator mismatch");
     }
 
     function testComputeDynamicSwapFeePercentage() public {
-        assertTrue(swapFeePercentage > 0, "Swap fee is zero");
+        assertGt(swapFeePercentage, 0, "Swap fee is zero");
         PoolHooksMock(poolHooksContract).setDynamicSwapFeePercentage(swapFeePercentage);
 
         uint256 dynamicSwapFeePercentage = explorer.computeDynamicSwapFeePercentage(
@@ -563,6 +570,19 @@ contract VaultExplorerTest is BaseVaultTest {
         vault.disableQuery();
 
         assertTrue(explorer.isQueryDisabled(), "Queries are not disabled");
+        assertFalse(explorer.isQueryDisabledPermanently(), "Queries are permanently disabled");
+    }
+
+    function testIsQueryDisabledPermanently() public {
+        assertFalse(explorer.isQueryDisabledPermanently(), "Queries are initially disabled");
+
+        bytes32 disableQueryRole = vault.getActionId(IVaultAdmin.disableQueryPermanently.selector);
+        authorizer.grantRole(disableQueryRole, alice);
+
+        vm.prank(alice);
+        vault.disableQueryPermanently();
+
+        assertTrue(explorer.isQueryDisabledPermanently(), "Queries are not permanently disabled");
     }
 
     function testAreBuffersPaused() public {
@@ -580,21 +600,21 @@ contract VaultExplorerTest is BaseVaultTest {
     function testGetPauseWindowEndTime() public view {
         uint256 vaultEndTime = vault.getPauseWindowEndTime();
 
-        assertTrue(vaultEndTime > 0, "Zero pause window end time");
+        assertGt(vaultEndTime, 0, "Zero pause window end time");
         assertEq(explorer.getPauseWindowEndTime(), vaultEndTime, "Pause window end time mismatch");
     }
 
     function testGetBufferPeriodDuration() public view {
         uint256 vaultBufferDuration = vault.getBufferPeriodDuration();
 
-        assertTrue(vaultBufferDuration > 0, "Zero buffer period duration");
+        assertGt(vaultBufferDuration, 0, "Zero buffer period duration");
         assertEq(explorer.getBufferPeriodDuration(), vaultBufferDuration, "Buffer period duration mismatch");
     }
 
     function testGetBufferPeriodEndTime() public view {
         uint256 vaultBufferEndTime = vault.getBufferPeriodEndTime();
 
-        assertTrue(vaultBufferEndTime > 0, "Zero buffer period end time");
+        assertGt(vaultBufferEndTime, 0, "Zero buffer period end time");
         assertEq(explorer.getBufferPeriodEndTime(), vaultBufferEndTime, "Buffer period end time mismatch");
     }
 
@@ -655,8 +675,8 @@ contract VaultExplorerTest is BaseVaultTest {
             .getVaultPausedState();
 
         assertFalse(vaultIsPaused, "Vault is paused");
-        assertTrue(vaultPauseWindowEndTime > 0, "Zero pause window end time");
-        assertTrue(vaultBufferPeriodEndTime > 0, "Zero buffer period end time");
+        assertGt(vaultPauseWindowEndTime, 0, "Zero pause window end time");
+        assertGt(vaultBufferPeriodEndTime, 0, "Zero buffer period end time");
 
         (bool explorerIsPaused, uint32 explorerPauseWindowEndTime, uint32 explorerBufferPeriodEndTime) = explorer
             .getVaultPausedState();
@@ -706,8 +726,8 @@ contract VaultExplorerTest is BaseVaultTest {
 
         // Ensure they were actually collected.
         feeAmounts = feeController.getProtocolFeeAmounts(pool);
-        assertTrue(feeAmounts[daiIdx] > 0, "Zero DAI fees");
-        assertTrue(feeAmounts[usdcIdx] > 0, "Zero USDC fees");
+        assertGt(feeAmounts[daiIdx], 0, "Zero DAI fees");
+        assertGt(feeAmounts[usdcIdx], 0, "Zero USDC fees");
     }
 
     function _setProtocolFees() private {
@@ -734,7 +754,7 @@ contract VaultExplorerTest is BaseVaultTest {
         _setupBuffer();
 
         uint256 lpShares = explorer.getBufferOwnerShares(waDAI, lp);
-        assertTrue(lpShares > 0, "LP has no shares");
+        assertGt(lpShares, 0, "LP has no shares");
     }
 
     function testGetBufferAsset() public {
@@ -750,8 +770,8 @@ contract VaultExplorerTest is BaseVaultTest {
         uint256 lpShares = explorer.getBufferOwnerShares(waDAI, lp);
         uint256 totalShares = explorer.getBufferTotalShares(waDAI);
 
-        // A single depositor has all the shares (except for the security premint).
-        assertTrue(lpShares > 0, "LP has no shares");
+        // A single depositor has all the shares (except for the security pre-mint).
+        assertGt(lpShares, 0, "LP has no shares");
         assertEq(totalShares - BUFFER_MINIMUM_TOTAL_SUPPLY, lpShares, "Share value mismatch");
     }
 
@@ -759,13 +779,13 @@ contract VaultExplorerTest is BaseVaultTest {
         _setupBuffer();
 
         (uint256 vaultUnderlyingBalanceRaw, uint256 vaultWrappedBalanceRaw) = vault.getBufferBalance(waDAI);
-        assertTrue(vaultUnderlyingBalanceRaw > 0, "Zero underlying balance");
-        assertTrue(vaultWrappedBalanceRaw > 0, "Zero wrapped balance");
+        assertGt(vaultUnderlyingBalanceRaw, 0, "Zero underlying balance");
+        assertGt(vaultWrappedBalanceRaw, 0, "Zero wrapped balance");
 
-        (uint256 explorerUnderlyingBalanceRaw, uint256 explorertWrappedBalanceRaw) = explorer.getBufferBalance(waDAI);
+        (uint256 explorerUnderlyingBalanceRaw, uint256 explorerWrappedBalanceRaw) = explorer.getBufferBalance(waDAI);
 
         assertEq(explorerUnderlyingBalanceRaw, vaultUnderlyingBalanceRaw, "Underlying balance mismatch");
-        assertEq(explorertWrappedBalanceRaw, vaultWrappedBalanceRaw, "Wrapped balance mismatch");
+        assertEq(explorerWrappedBalanceRaw, vaultWrappedBalanceRaw, "Wrapped balance mismatch");
     }
 
     function _registerPool(address newPool, bool initializeNewPool) private {
@@ -819,7 +839,7 @@ contract VaultExplorerTest is BaseVaultTest {
 
         uint256 depositAmount = 100e18;
 
-        router.initializeBuffer(IERC4626(address(waDAI)), depositAmount, depositAmount);
+        bufferRouter.initializeBuffer(IERC4626(address(waDAI)), depositAmount, depositAmount, 0);
         vm.stopPrank();
     }
 }

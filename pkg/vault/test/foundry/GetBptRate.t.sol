@@ -40,38 +40,49 @@ contract GetBptRateTest is BaseVaultTest {
         (daiIdx, usdcIdx) = getSortedIndexes(address(dai), address(usdc));
     }
 
-    function _createPool(address[] memory tokens, string memory label) internal virtual override returns (address) {
+    function _createPool(
+        address[] memory tokens,
+        string memory label
+    ) internal virtual override returns (address newPool, bytes memory poolArgs) {
         PoolRoleAccounts memory roleAccounts;
 
         factory = new WeightedPoolFactory(IVault(address(vault)), 365 days, "Factory v1", "Weighted Pool v1");
         weights = [uint256(50e16), uint256(50e16)].toMemoryArray();
 
-        RateProviderMock rateProviderDai = new RateProviderMock();
+        RateProviderMock rateProviderDai = deployRateProviderMock();
         rateProviderDai.mockRate(daiMockRate);
-        RateProviderMock rateProviderUsdc = new RateProviderMock();
+        RateProviderMock rateProviderUsdc = deployRateProviderMock();
         rateProviderUsdc.mockRate(usdcMockRate);
 
-        // The rate providers will be sorted along with the tokens, by `buildTokenConfig`
+        // The rate providers will be sorted along with the tokens, by `buildTokenConfig`.
         IRateProvider[] memory rateProviders = new IRateProvider[](2);
         rateProviders[0] = IRateProvider(rateProviderDai);
         rateProviders[1] = IRateProvider(rateProviderUsdc);
 
-        WeightedPool newPool = WeightedPool(
-            factory.create(
-                "ERC20 Pool",
-                "ERC20POOL",
-                vault.buildTokenConfig(tokens.asIERC20(), rateProviders),
-                weights,
-                roleAccounts,
-                swapFeePercentage,
-                address(0), // No hook contract
-                false, // Do not enable donations
-                false, // Do not disable unbalanced add/remove liquidity
-                ZERO_BYTES32
-            )
+        newPool = factory.create(
+            "ERC20 Pool",
+            "ERC20POOL",
+            vault.buildTokenConfig(tokens.asIERC20(), rateProviders),
+            weights,
+            roleAccounts,
+            swapFeePercentage,
+            address(0), // No hook contract
+            false, // Do not enable donations
+            false, // Do not disable unbalanced add/remove liquidity
+            ZERO_BYTES32
         );
-        vm.label(address(newPool), label);
-        return address(newPool);
+        vm.label(newPool, label);
+
+        poolArgs = abi.encode(
+            WeightedPool.NewPoolParams({
+                name: "ERC20 Pool",
+                symbol: "ERC20POOL",
+                numTokens: tokens.length,
+                normalizedWeights: weights,
+                version: "Weighted Pool v1"
+            }),
+            vault
+        );
     }
 
     function initPool() internal override {

@@ -12,22 +12,29 @@ import { CastingHelpers } from "@balancer-labs/v3-solidity-utils/contracts/helpe
 import { FixedPoint } from "@balancer-labs/v3-solidity-utils/contracts/math/FixedPoint.sol";
 
 import { RateProviderMock } from "../../contracts/test/RateProviderMock.sol";
+import { VaultContractsDeployer } from "./utils/VaultContractsDeployer.sol";
 
 import { E2eSwapTest } from "./E2eSwap.t.sol";
 
-contract E2eSwapRateProviderTest is E2eSwapTest {
+contract E2eSwapRateProviderTest is VaultContractsDeployer, E2eSwapTest {
     using CastingHelpers for address[];
     using FixedPoint for uint256;
 
     RateProviderMock internal rateProviderTokenA;
     RateProviderMock internal rateProviderTokenB;
 
-    function _createPool(address[] memory tokens, string memory label) internal virtual override returns (address) {
-        address newPool = factoryMock.createPool("ERC20 Pool", "ERC20POOL");
+    function _createPool(
+        address[] memory tokens,
+        string memory label
+    ) internal virtual override returns (address newPool, bytes memory poolArgs) {
+        string memory name = "ERC20 Pool";
+        string memory symbol = "ERC20POOL";
+
+        newPool = factoryMock.createPool(name, symbol);
         vm.label(newPool, label);
 
-        rateProviderTokenA = new RateProviderMock();
-        rateProviderTokenB = new RateProviderMock();
+        rateProviderTokenA = deployRateProviderMock();
+        rateProviderTokenB = deployRateProviderMock();
         // Mock rates, so all tests that keep the rate constant use a rate different than 1.
         rateProviderTokenA.mockRate(5.2453235e18);
         rateProviderTokenB.mockRate(0.4362784e18);
@@ -43,7 +50,7 @@ contract E2eSwapRateProviderTest is E2eSwapTest {
             lp
         );
 
-        return newPool;
+        poolArgs = abi.encode(vault, name, symbol);
     }
 
     function getRate(IERC20 token) internal view override returns (uint256) {

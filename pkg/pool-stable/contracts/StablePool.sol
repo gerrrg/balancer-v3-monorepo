@@ -4,25 +4,26 @@ pragma solidity ^0.8.24;
 
 import { SafeCast } from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
-import {
-    IStablePool,
-    StablePoolDynamicData,
-    StablePoolImmutableData
-} from "@balancer-labs/v3-interfaces/contracts/pool-stable/IStablePool.sol";
 import { ISwapFeePercentageBounds } from "@balancer-labs/v3-interfaces/contracts/vault/ISwapFeePercentageBounds.sol";
 import {
     IUnbalancedLiquidityInvariantRatioBounds
 } from "@balancer-labs/v3-interfaces/contracts/vault/IUnbalancedLiquidityInvariantRatioBounds.sol";
-import { IVault } from "@balancer-labs/v3-interfaces/contracts/vault/IVault.sol";
 import { IBasePool } from "@balancer-labs/v3-interfaces/contracts/vault/IBasePool.sol";
+import { IVault } from "@balancer-labs/v3-interfaces/contracts/vault/IVault.sol";
+import {
+    IStablePool,
+    StablePoolDynamicData,
+    StablePoolImmutableData,
+    AmplificationState
+} from "@balancer-labs/v3-interfaces/contracts/pool-stable/IStablePool.sol";
 import "@balancer-labs/v3-interfaces/contracts/vault/VaultTypes.sol";
 
-import { BalancerPoolToken } from "@balancer-labs/v3-vault/contracts/BalancerPoolToken.sol";
 import { BasePoolAuthentication } from "@balancer-labs/v3-pool-utils/contracts/BasePoolAuthentication.sol";
-import { PoolInfo } from "@balancer-labs/v3-pool-utils/contracts/PoolInfo.sol";
+import { BalancerPoolToken } from "@balancer-labs/v3-vault/contracts/BalancerPoolToken.sol";
 import { FixedPoint } from "@balancer-labs/v3-solidity-utils/contracts/math/FixedPoint.sol";
 import { StableMath } from "@balancer-labs/v3-solidity-utils/contracts/math/StableMath.sol";
 import { Version } from "@balancer-labs/v3-solidity-utils/contracts/helpers/Version.sol";
+import { PoolInfo } from "@balancer-labs/v3-pool-utils/contracts/PoolInfo.sol";
 
 /**
  * @notice Standard Balancer Stable Pool.
@@ -44,15 +45,8 @@ contract StablePool is IStablePool, BalancerPoolToken, BasePoolAuthentication, P
     using FixedPoint for uint256;
     using SafeCast for *;
 
-    struct AmplificationState {
-        uint64 startValue;
-        uint64 endValue;
-        uint32 startTime;
-        uint32 endTime;
-    }
-
     // This contract uses timestamps to slowly update its Amplification parameter over time. These changes must occur
-    // over a minimum time period much larger than the blocktime, making timestamp manipulation a non-issue.
+    // over a minimum time period much larger than the block time, making timestamp manipulation a non-issue.
     // solhint-disable not-rely-on-time
 
     // Amplification factor changes must happen over a minimum period of one day, and can at most divide or multiple the
@@ -69,11 +63,6 @@ contract StablePool is IStablePool, BalancerPoolToken, BasePoolAuthentication, P
     // Maximum values protect users by preventing permissioned actors from setting excessively high swap fees.
     uint256 private constant _MIN_SWAP_FEE_PERCENTAGE = 1e12; // 0.0001%
     uint256 private constant _MAX_SWAP_FEE_PERCENTAGE = 10e16; // 10%
-
-    // Invariant growth limit: non-proportional add cannot cause the invariant to increase by more than this ratio.
-    uint256 private constant _MIN_INVARIANT_RATIO = 60e16; // 60%
-    // Invariant shrink limit: non-proportional remove cannot cause the invariant to decrease by less than this ratio.
-    uint256 private constant _MAX_INVARIANT_RATIO = 500e16; // 500%
 
     /// @notice Store amplification state.
     AmplificationState private _amplificationState;
@@ -117,7 +106,8 @@ contract StablePool is IStablePool, BalancerPoolToken, BasePoolAuthentication, P
      * @param symbol ERC20 token symbol
      * @param amplificationParameter Controls the "flatness" of the invariant curve. higher values = lower slippage,
      * and assumes prices are near parity. lower values = closer to the constant product curve (e.g., more like a
-     * weighted pool). This has higher slippage, and accommodates greater price volatility.
+     * weighted pool). This has higher slippage, and accommodates greater price volatility
+     * @param version The stable pool version
      */
     struct NewPoolParams {
         string name;
@@ -147,10 +137,15 @@ contract StablePool is IStablePool, BalancerPoolToken, BasePoolAuthentication, P
     }
 
     /// @inheritdoc IBasePool
-    function computeInvariant(uint256[] memory balancesLiveScaled18, Rounding) public view returns (uint256) {
+    function computeInvariant(uint256[] memory balancesLiveScaled18, Rounding rounding) public view returns (uint256) {
         (uint256 currentAmp, ) = _getAmplificationParameter();
 
-        return StableMath.computeInvariant(currentAmp, balancesLiveScaled18);
+        uint256 invariant = StableMath.computeInvariant(currentAmp, balancesLiveScaled18);
+        if (invariant > 0) {
+            invariant = rounding == Rounding.ROUND_DOWN ? invariant : invariant + 1;
+        }
+
+        return invariant;
     }
 
     /// @inheritdoc IBasePool
@@ -165,13 +160,13 @@ contract StablePool is IStablePool, BalancerPoolToken, BasePoolAuthentication, P
             StableMath.computeBalance(
                 currentAmp,
                 balancesLiveScaled18,
-                computeInvariant(balancesLiveScaled18, Rounding.ROUND_DOWN).mulDown(invariantRatio),
+                computeInvariant(balancesLiveScaled18, Rounding.ROUND_UP).mulUp(invariantRatio),
                 tokenInIndex
             );
     }
 
     /// @inheritdoc IBasePool
-    function onSwap(PoolSwapParams memory request) public view onlyVault returns (uint256) {
+    function onSwap(PoolSwapParams memory request) public view virtual onlyVault returns (uint256) {
         uint256 invariant = computeInvariant(request.balancesScaled18, Rounding.ROUND_DOWN);
         (uint256 currentAmp, ) = _getAmplificationParameter();
 
@@ -232,6 +227,7 @@ contract StablePool is IStablePool, BalancerPoolToken, BasePoolAuthentication, P
             revert AmpUpdateRateTooFast();
         }
 
+        // Values are 18 decimal floating point, which fits in 64 bits. Timestamps are 32 bits.
         uint64 currentValueUint64 = currentValue.toUint64();
         uint64 endValueUint64 = endValue.toUint64();
         uint32 startTimeUint32 = block.timestamp.toUint32();
@@ -243,6 +239,10 @@ contract StablePool is IStablePool, BalancerPoolToken, BasePoolAuthentication, P
         _amplificationState.endTime = endTimeUint32;
 
         emit AmpUpdateStarted(currentValueUint64, endValueUint64, startTimeUint32, endTimeUint32);
+        _vault.emitAuxiliaryEvent(
+            "AmpUpdateStarted",
+            abi.encode(currentValueUint64, endValueUint64, startTimeUint32, endTimeUint32)
+        );
     }
 
     /// @inheritdoc IStablePool
@@ -254,11 +254,22 @@ contract StablePool is IStablePool, BalancerPoolToken, BasePoolAuthentication, P
         }
 
         _stopAmplification(currentValue);
+        _vault.emitAuxiliaryEvent("AmpUpdateStopped", abi.encode(currentValue));
     }
 
     /// @inheritdoc IStablePool
     function getAmplificationParameter() external view returns (uint256 value, bool isUpdating, uint256 precision) {
         (value, isUpdating) = _getAmplificationParameter();
+        precision = StableMath.AMP_PRECISION;
+    }
+
+    /// @inheritdoc IStablePool
+    function getAmplificationState()
+        external
+        view
+        returns (AmplificationState memory amplificationState, uint256 precision)
+    {
+        amplificationState = _amplificationState;
         precision = StableMath.AMP_PRECISION;
     }
 
@@ -326,12 +337,12 @@ contract StablePool is IStablePool, BalancerPoolToken, BasePoolAuthentication, P
 
     /// @inheritdoc IUnbalancedLiquidityInvariantRatioBounds
     function getMinimumInvariantRatio() external pure returns (uint256) {
-        return _MIN_INVARIANT_RATIO;
+        return StableMath.MIN_INVARIANT_RATIO;
     }
 
     /// @inheritdoc IUnbalancedLiquidityInvariantRatioBounds
     function getMaximumInvariantRatio() external pure returns (uint256) {
-        return _MAX_INVARIANT_RATIO;
+        return StableMath.MAX_INVARIANT_RATIO;
     }
 
     /// @inheritdoc IStablePool
@@ -342,6 +353,12 @@ contract StablePool is IStablePool, BalancerPoolToken, BasePoolAuthentication, P
         data.totalSupply = totalSupply();
         data.bptRate = getRate();
         (data.amplificationParameter, data.isAmpUpdating) = _getAmplificationParameter();
+
+        AmplificationState memory state = _amplificationState;
+        data.startValue = state.startValue;
+        data.endValue = state.endValue;
+        data.startTime = state.startTime;
+        data.endTime = state.endTime;
 
         PoolConfig memory poolConfig = _vault.getPoolConfig(address(this));
         data.isPoolInitialized = poolConfig.isPoolInitialized;

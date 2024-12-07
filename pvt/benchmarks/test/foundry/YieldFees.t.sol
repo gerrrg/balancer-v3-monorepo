@@ -50,11 +50,16 @@ contract YieldFeesTest is BaseVaultTest {
     }
 
     // Create wsteth / dai pool, with rate providers on wsteth (non-exempt), and dai (exempt)
-    function createPool() internal override returns (address) {
+    function createPool() internal override returns (address newPool, bytes memory poolArgs) {
         factory = new WeightedPoolFactory(IVault(address(vault)), 365 days, "Factory v1", "Pool v1");
 
-        wstETHRateProvider = new RateProviderMock();
-        daiRateProvider = new RateProviderMock();
+        string memory name = "ERC20 Pool";
+        string memory symbol = "ERC20POOL";
+
+        uint256[] memory weights = [uint256(50e16), uint256(50e16)].toMemoryArray();
+
+        wstETHRateProvider = deployRateProviderMock();
+        daiRateProvider = deployRateProviderMock();
 
         IRateProvider[] memory rateProviders = new IRateProvider[](2);
         bool[] memory yieldFeeFlags = new bool[](2);
@@ -67,27 +72,35 @@ contract YieldFeesTest is BaseVaultTest {
 
         PoolRoleAccounts memory poolRoleAccounts;
 
-        weightedPoolWithRate = WeightedPool(
-            factory.create(
-                "ERC20 Pool",
-                "ERC20POOL",
-                vault.buildTokenConfig(
-                    [address(wsteth), address(dai)].toMemoryArray().asIERC20(),
-                    rateProviders,
-                    yieldFeeFlags
-                ),
-                [uint256(50e16), uint256(50e16)].toMemoryArray(),
-                poolRoleAccounts,
-                swapFee,
-                address(0),
-                false,
-                false,
-                bytes32(0)
-            )
+        newPool = factory.create(
+            name,
+            symbol,
+            vault.buildTokenConfig(
+                [address(wsteth), address(dai)].toMemoryArray().asIERC20(),
+                rateProviders,
+                yieldFeeFlags
+            ),
+            weights,
+            poolRoleAccounts,
+            swapFee,
+            address(0),
+            false,
+            false,
+            bytes32(0)
         );
 
-        vm.label(address(weightedPoolWithRate), "weightedPoolWithRate");
-        return address(weightedPoolWithRate);
+        vm.label(newPool, "weightedPoolWithRate");
+
+        poolArgs = abi.encode(
+            WeightedPool.NewPoolParams({
+                name: name,
+                symbol: symbol,
+                numTokens: 2,
+                normalizedWeights: weights,
+                version: "Pool Version 1"
+            }),
+            vault
+        );
     }
 
     function testSwapWithoutYieldFeesSnapshot() public {
@@ -98,7 +111,7 @@ contract YieldFeesTest is BaseVaultTest {
     }
 
     function testSwapWithProtocolYieldFeesSnapshot() public {
-        // yield fee 20% and creator yield fees 0%
+        // yield fee 20% and creator yield fees 0%.
         uint256 aggregateYieldFeePercentage = 20e16;
 
         uint256 wstethRate = 1.3e18;
@@ -132,25 +145,25 @@ contract YieldFeesTest is BaseVaultTest {
 
         vault.manualSetAggregateYieldFeePercentage(pool, aggregateYieldFeePercentage);
 
-        // Warm-up storage slots (using a different pool)
-        // Pump the original rates [pumpRate / 2] times
+        // Warm-up storage slots (using a different pool).
+        // Pump the original rates [pumpRate / 2] times.
         wstETHRateProvider.mockRate((wstethRate * pumpRate) / 2);
         daiRateProvider.mockRate((daiRate * pumpRate) / 2);
 
         vm.prank(alice);
         uint256 amountOut = router.swapSingleTokenExactIn(pool, dai, wsteth, 1e18, 0, MAX_UINT256, false, bytes(""));
 
-        // Pump the original rates [pumpRate] times
+        // Pump the original rates [pumpRate] times.
         wstETHRateProvider.mockRate(wstethRate * pumpRate);
         daiRateProvider.mockRate(daiRate * pumpRate);
 
-        // Dummy swap
+        // Dummy swap.
         vm.prank(alice);
         router.swapSingleTokenExactIn(pool, wsteth, dai, amountOut, 0, MAX_UINT256, false, bytes(""));
     }
 
     function _initializePoolAndRateProviders(uint256 wstethRate, uint256 daiRate) private {
-        pool = createPool();
+        (pool, ) = createPool();
         wstETHRateProvider.mockRate(wstethRate);
         daiRateProvider.mockRate(daiRate);
 

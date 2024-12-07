@@ -4,22 +4,22 @@ pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
 
-import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-import { IHooks } from "@balancer-labs/v3-interfaces/contracts/vault/IHooks.sol";
-import { IVault } from "@balancer-labs/v3-interfaces/contracts/vault/IVault.sol";
 import { IVaultErrors } from "@balancer-labs/v3-interfaces/contracts/vault/IVaultErrors.sol";
 import { IVaultEvents } from "@balancer-labs/v3-interfaces/contracts/vault/IVaultEvents.sol";
+import { IHooks } from "@balancer-labs/v3-interfaces/contracts/vault/IHooks.sol";
+import { IVault } from "@balancer-labs/v3-interfaces/contracts/vault/IVault.sol";
 import "@balancer-labs/v3-interfaces/contracts/vault/VaultTypes.sol";
 
 import { CastingHelpers } from "@balancer-labs/v3-solidity-utils/contracts/helpers/CastingHelpers.sol";
-import { ArrayHelpers } from "@balancer-labs/v3-solidity-utils/contracts/test/ArrayHelpers.sol";
 import { InputHelpers } from "@balancer-labs/v3-solidity-utils/contracts/helpers/InputHelpers.sol";
+import { ArrayHelpers } from "@balancer-labs/v3-solidity-utils/contracts/test/ArrayHelpers.sol";
 import { FixedPoint } from "@balancer-labs/v3-solidity-utils/contracts/math/FixedPoint.sol";
 
-import { PoolMock } from "../../contracts/test/PoolMock.sol";
 import { HooksConfigLib } from "../../contracts/lib/HooksConfigLib.sol";
+import { PoolMock } from "../../contracts/test/PoolMock.sol";
 import { BaseVaultTest } from "./utils/BaseVaultTest.sol";
 
 contract RegistrationTest is BaseVaultTest {
@@ -35,12 +35,13 @@ contract RegistrationTest is BaseVaultTest {
 
         standardPoolTokens = InputHelpers.sortTokens([address(dai), address(usdc)].toMemoryArray().asIERC20());
 
-        pool = address(new PoolMock(IVault(address(vault)), "ERC20 Pool", "ERC20POOL"));
+        pool = address(deployPoolMock(IVault(address(vault)), "ERC20 Pool", "ERC20POOL"));
     }
 
     // Do not register the pool in the base test.
-    function createPool() internal pure override returns (address) {
-        return address(0);
+    function createPool() internal pure override returns (address newPool, bytes memory poolArgs) {
+        newPool = address(0);
+        poolArgs = bytes("");
     }
 
     function initPool() internal override {}
@@ -121,7 +122,7 @@ contract RegistrationTest is BaseVaultTest {
     }
 
     function testRegisterSetSwapFeePercentage__Fuzz(uint256 swapFeePercentage) public {
-        swapFeePercentage = bound(swapFeePercentage, 0, FixedPoint.ONE);
+        swapFeePercentage = bound(swapFeePercentage, 0, MAX_FEE_PERCENTAGE);
         PoolRoleAccounts memory roleAccounts;
         TokenConfig[] memory tokenConfig = vault.buildTokenConfig(standardPoolTokens);
         LiquidityManagement memory liquidityManagement;
@@ -182,29 +183,21 @@ contract RegistrationTest is BaseVaultTest {
         assertEq(poolConfig.pauseWindowEndTime, pauseWindowEndTime, "Wrong pause window end time");
     }
 
-    function testRegisterSetTokenDecimalDiffs__Fuzz(uint256 decimalDiff) public {
-        uint8 decimalDiffDai = uint8(bound(decimalDiff, 0, 18));
-        uint8 decimalDiffUsdc = uint8(bound(decimalDiffDai * 10, 0, 18));
+    function testRegisterSetTokenDecimalDiffs__Fuzz(uint256 decimals) public {
+        uint8 daiDecimals = uint8(bound(decimals, 0, 18));
+        uint8 usdcDecimals = uint8(bound(daiDecimals * 10, 0, 18));
         (uint256 daiIdx, uint256 usdcIdx) = getSortedIndexes(address(dai), address(usdc));
 
         PoolRoleAccounts memory roleAccounts;
         TokenConfig[] memory tokenConfig = vault.buildTokenConfig(standardPoolTokens);
         LiquidityManagement memory liquidityManagement;
-        vm.mockCall(address(dai), abi.encodeWithSelector(IERC20Metadata.decimals.selector), abi.encode(decimalDiffDai));
-        vm.mockCall(
-            address(usdc),
-            abi.encodeWithSelector(IERC20Metadata.decimals.selector),
-            abi.encode(decimalDiffUsdc)
-        );
+        vm.mockCall(address(dai), abi.encodeWithSelector(IERC20Metadata.decimals.selector), abi.encode(daiDecimals));
+        vm.mockCall(address(usdc), abi.encodeWithSelector(IERC20Metadata.decimals.selector), abi.encode(usdcDecimals));
         vault.registerPool(pool, tokenConfig, 0, 0, false, roleAccounts, address(0), liquidityManagement);
-        // Test end to end that the decimal scaling factors are correct
+        // Test end to end that the decimal scaling factors are correct.
         (uint256[] memory decimalScalingFactors, ) = vault.getPoolTokenRates(pool);
-        assertEq(decimalScalingFactors[daiIdx], 1e18 * 10 ** (18 - decimalDiffDai), "Wrong dai decimal scaling factor");
-        assertEq(
-            decimalScalingFactors[usdcIdx],
-            1e18 * 10 ** (18 - decimalDiffUsdc),
-            "Wrong usdc decimal scaling factor"
-        );
+        assertEq(decimalScalingFactors[daiIdx], 10 ** (18 - daiDecimals), "Wrong dai decimal scaling factor");
+        assertEq(decimalScalingFactors[usdcIdx], 10 ** (18 - usdcDecimals), "Wrong usdc decimal scaling factor");
     }
 
     function testRegisterSetWrongTokenDecimalDiffs() public {
@@ -213,7 +206,7 @@ contract RegistrationTest is BaseVaultTest {
         LiquidityManagement memory liquidityManagement;
         vm.mockCall(address(dai), abi.encodeWithSelector(IERC20Metadata.decimals.selector), abi.encode(19));
 
-        vm.expectRevert(stdError.arithmeticError);
+        vm.expectRevert(IVaultErrors.InvalidTokenDecimals.selector);
         vault.registerPool(pool, tokenConfig, 0, 0, false, roleAccounts, address(0), liquidityManagement);
     }
 

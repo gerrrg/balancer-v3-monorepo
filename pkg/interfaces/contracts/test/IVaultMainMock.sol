@@ -2,8 +2,8 @@
 
 pragma solidity ^0.8.24;
 
-import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { IERC4626 } from "@openzeppelin/contracts/interfaces/IERC4626.sol";
+import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import { IRateProvider } from "../solidity-utils/helpers/IRateProvider.sol";
 import "../vault/VaultTypes.sol";
@@ -53,6 +53,8 @@ interface IVaultMainMock {
     /// @dev Does not check the value against any min/max limits normally enforced by the pool.
     function manualUnsafeSetStaticSwapFeePercentage(address pool, uint256 value) external;
 
+    function manualSetPoolTokens(address pool, IERC20[] memory tokens) external;
+
     function manualSetPoolTokensAndBalances(address, IERC20[] memory, uint256[] memory, uint256[] memory) external;
 
     function manualSetPoolBalances(address, uint256[] memory, uint256[] memory) external;
@@ -67,9 +69,9 @@ interface IVaultMainMock {
 
     function ensureUnpausedAndGetVaultState(address) external view returns (VaultState memory);
 
-    function internalGetBufferUnderlyingSurplus(IERC4626 wrappedToken) external view returns (uint256);
+    function internalGetBufferUnderlyingImbalance(IERC4626 wrappedToken) external view returns (int256);
 
-    function internalGetBufferWrappedSurplus(IERC4626 wrappedToken) external view returns (uint256);
+    function internalGetBufferWrappedImbalance(IERC4626 wrappedToken) external view returns (int256);
 
     function getBufferTokenBalancesBytes(IERC4626 wrappedToken) external view returns (bytes32);
 
@@ -84,6 +86,8 @@ interface IVaultMainMock {
         address pool,
         Rounding roundingDirection
     ) external returns (PoolData memory);
+
+    function manualWritePoolBalancesToStorage(address pool, PoolData memory poolData) external;
 
     function getRawBalances(address pool) external view returns (uint256[] memory balancesRaw);
 
@@ -185,11 +189,11 @@ interface IVaultMainMock {
 
     function manualComputeAndChargeAggregateSwapFees(
         PoolData memory poolData,
-        uint256 swapFeeAmountScaled18,
+        uint256 totalSwapFeeAmountScaled18,
         address pool,
         IERC20 token,
         uint256 index
-    ) external returns (uint256 totalFeesRaw);
+    ) external returns (uint256 totalSwapFeeAmountRaw, uint256 aggregateSwapFeeAmountRaw);
 
     function manualUpdatePoolDataLiveBalancesAndRates(
         address pool,
@@ -269,11 +273,33 @@ interface IVaultMainMock {
 
     function manualSetBufferTotalShares(IERC4626 wrappedToken, uint256 shares) external;
 
+    function manualSetBufferBalances(IERC4626 wrappedToken, uint256 underlyingAmount, uint256 wrappedAmount) external;
+
     function manualSettleReentrancy(IERC20 token) external returns (uint256 paid);
 
     function manualSendToReentrancy(IERC20 token, address to, uint256 amount) external;
 
     function manualFindTokenIndex(IERC20[] memory tokens, IERC20 token) external pure returns (uint256 index);
 
+    function manualSetAddLiquidityCalledFlag(address pool, bool flag) external;
+
     function manualSetPoolCreator(address pool, address newPoolCreator) external;
+
+    function ensureValidTradeAmount(uint256 tradeAmount) external view;
+
+    function ensureValidSwapAmount(uint256 tradeAmount) external view;
+
+    function manualUpdateAggregateSwapFeePercentage(address pool, uint256 newAggregateSwapFeePercentage) external;
+
+    function manualGetAddLiquidityCalledFlagBySession(address pool, uint256 sessionId) external view returns (bool);
+
+    function manualGetCurrentUnlockSessionId() external view returns (uint256);
+
+    function previewDeposit(IERC4626 wrapper, uint256 amountInUnderlying) external returns (uint256 amountOutWrapped);
+
+    function previewMint(IERC4626 wrapper, uint256 amountOutWrapped) external returns (uint256 amountInUnderlying);
+
+    function previewRedeem(IERC4626 wrapper, uint256 amountInWrapped) external returns (uint256 amountOutUnderlying);
+
+    function previewWithdraw(IERC4626 wrapper, uint256 amountOutUnderlying) external returns (uint256 amountInWrapped);
 }

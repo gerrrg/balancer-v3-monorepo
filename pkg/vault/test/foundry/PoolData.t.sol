@@ -29,16 +29,19 @@ contract PoolDataTest is BaseVaultTest {
         BaseVaultTest.setUp();
     }
 
-    function createPool() internal override returns (address) {
+    function createPool() internal override returns (address newPool, bytes memory poolArgs) {
+        string memory name = "ERC20 Pool";
+        string memory symbol = "ERC20POOL";
+
         IRateProvider[] memory rateProviders = new IRateProvider[](2);
-        wstETHRateProvider = new RateProviderMock();
-        daiRateProvider = new RateProviderMock();
+        wstETHRateProvider = deployRateProviderMock();
+        daiRateProvider = deployRateProviderMock();
 
         // Providers will be sorted along with the tokens by `buildTokenConfig`.
         rateProviders[0] = daiRateProvider;
         rateProviders[1] = wstETHRateProvider;
 
-        address newPool = address(new PoolMock(IVault(address(vault)), "ERC20 Pool", "ERC20POOL"));
+        newPool = address(deployPoolMock(IVault(address(vault)), name, symbol));
 
         factoryMock.registerTestPool(
             newPool,
@@ -47,7 +50,7 @@ contract PoolDataTest is BaseVaultTest {
             lp
         );
 
-        return newPool;
+        poolArgs = abi.encode(vault, name, symbol);
     }
 
     function testPoolData__Fuzz(uint256 daiRate, uint256 wstETHRate, bool roundUp) public {
@@ -74,23 +77,23 @@ contract PoolDataTest is BaseVaultTest {
         uint256 expectedLiveBalance;
 
         for (uint256 i = 0; i < expectedRawBalances.length; ++i) {
-            assertEq(data.decimalScalingFactors[i], expectedScalingFactors[i]);
-            assertEq(data.balancesRaw[i], expectedRawBalances[i]);
-            assertEq(data.tokenRates[i], expectedRates[i]);
+            assertEq(data.decimalScalingFactors[i], expectedScalingFactors[i], "Wrong decimal scaling factor");
+            assertEq(data.balancesRaw[i], expectedRawBalances[i], "Wrong raw balance");
+            assertEq(data.tokenRates[i], expectedRates[i], "Wrong rate");
 
             if (roundUp) {
                 expectedLiveBalance = FixedPoint.mulUp(
-                    expectedRawBalances[i],
-                    expectedScalingFactors[i].mulUp(expectedRates[i])
+                    expectedRawBalances[i] * expectedScalingFactors[i],
+                    expectedRates[i]
                 );
             } else {
                 expectedLiveBalance = FixedPoint.mulDown(
-                    expectedRawBalances[i],
-                    expectedScalingFactors[i].mulDown(expectedRates[i])
+                    expectedRawBalances[i] * expectedScalingFactors[i],
+                    expectedRates[i]
                 );
             }
 
-            assertEq(data.balancesLiveScaled18[i], expectedLiveBalance);
+            assertEq(data.balancesLiveScaled18[i], expectedLiveBalance, "Wrong live balance");
         }
 
         assertEq(address(data.tokens[0]), address(dai));

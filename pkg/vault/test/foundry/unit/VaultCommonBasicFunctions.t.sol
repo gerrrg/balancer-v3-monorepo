@@ -58,8 +58,8 @@ contract VaultCommonBasicFunctionsTest is BaseVaultTest {
         );
     }
 
-    function createPool() internal pure override returns (address) {
-        return address(0);
+    function createPool() internal pure override returns (address, bytes memory) {
+        return (address(0), new bytes(0));
     }
 
     function initPool() internal pure override {}
@@ -170,7 +170,7 @@ contract VaultCommonBasicFunctionsTest is BaseVaultTest {
         for (uint256 i = 0; i < decimalScalingFactors.length; ++i) {
             assertEq(
                 decimalScalingFactors[i],
-                10 ** (18 + tokenDecimalDiffs[i]),
+                10 ** tokenDecimalDiffs[i],
                 string.concat("decimalScalingFactors of token", Strings.toString(i), "should match tokenDecimalDiffs")
             );
         }

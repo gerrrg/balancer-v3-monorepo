@@ -22,6 +22,7 @@ import {
     TransientStorageHelpers,
     TokenDeltaMappingSlotType
 } from "@balancer-labs/v3-solidity-utils/contracts/helpers/TransientStorageHelpers.sol";
+import { WordCodec } from "@balancer-labs/v3-solidity-utils/contracts/helpers/WordCodec.sol";
 
 import { VaultStateLib, VaultStateBits } from "../lib/VaultStateLib.sol";
 import { PoolConfigLib, PoolConfigBits } from "../lib/PoolConfigLib.sol";
@@ -29,6 +30,7 @@ import { HooksConfigLib } from "../lib/HooksConfigLib.sol";
 import { InputHelpersMock } from "./InputHelpersMock.sol";
 import { PoolFactoryMock } from "./PoolFactoryMock.sol";
 import { VaultExtension } from "../VaultExtension.sol";
+import { PoolConfigConst } from "../lib/PoolConfigConst.sol";
 import { PoolDataLib } from "../lib/PoolDataLib.sol";
 import { Vault } from "../Vault.sol";
 
@@ -48,6 +50,7 @@ contract VaultMock is IVaultMainMock, Vault {
     using PoolDataLib for PoolData;
     using TransientStorageHelpers for *;
     using StorageSlotExtension for *;
+    using WordCodec for bytes32;
 
     PoolFactoryMock private immutable _poolFactoryMock;
     InputHelpersMock private immutable _inputHelpersMock;
@@ -172,7 +175,7 @@ contract VaultMock is IVaultMainMock, Vault {
         poolConfigBits = poolConfigBits.setPoolInRecoveryMode(config.isPoolInRecoveryMode);
         poolConfigBits = poolConfigBits.setPoolPaused(config.isPoolPaused);
         poolConfigBits = poolConfigBits.setStaticSwapFeePercentage(config.staticSwapFeePercentage);
-        poolConfigBits = poolConfigBits.setAggregateSwapFeePercentage(config.aggregateSwapFeePercentage);
+        poolConfigBits = _manualSetAggregateSwapFeePercentage(poolConfigBits, config.aggregateSwapFeePercentage);
         poolConfigBits = poolConfigBits.setAggregateYieldFeePercentage(config.aggregateYieldFeePercentage);
         poolConfigBits = poolConfigBits.setTokenDecimalDiffs(config.tokenDecimalDiffs);
         poolConfigBits = poolConfigBits.setPauseWindowEndTime(config.pauseWindowEndTime);
@@ -232,6 +235,10 @@ contract VaultMock is IVaultMainMock, Vault {
         for (uint256 i = 0; i < tokens.length; ++i) {
             _poolTokenInfo[pool][tokens[i]] = tokenInfo[i];
         }
+    }
+
+    function manualSetPoolTokens(address pool, IERC20[] memory tokens) public {
+        _poolTokens[pool] = tokens;
     }
 
     function manualSetPoolTokensAndBalances(
@@ -382,6 +389,10 @@ contract VaultMock is IVaultMainMock, Vault {
         return PoolDataLib._computeYieldFeesDue(poolData, lastLiveBalance, tokenIndex, aggregateYieldFeePercentage);
     }
 
+    function manualWritePoolBalancesToStorage(address pool, PoolData memory poolData) external {
+        _writePoolBalancesToStorage(pool, poolData);
+    }
+
     function getRawBalances(address pool) external view returns (uint256[] memory balancesRaw) {
         mapping(uint256 tokenIndex => bytes32 packedTokenBalance) storage poolTokenBalances = _poolTokenBalances[pool];
 
@@ -507,12 +518,12 @@ contract VaultMock is IVaultMainMock, Vault {
 
     function manualComputeAndChargeAggregateSwapFees(
         PoolData memory poolData,
-        uint256 swapFeeAmountScaled18,
+        uint256 totalSwapFeeAmountScaled18,
         address pool,
         IERC20 token,
         uint256 index
-    ) external returns (uint256 totalFeesRaw) {
-        return _computeAndChargeAggregateSwapFees(poolData, swapFeeAmountScaled18, pool, token, index);
+    ) external returns (uint256 totalSwapFeeAmountRaw, uint256 aggregateSwapFeeAmountRaw) {
+        return _computeAndChargeAggregateSwapFees(poolData, totalSwapFeeAmountScaled18, pool, token, index);
     }
 
     function manualUpdatePoolDataLiveBalancesAndRates(
@@ -595,14 +606,14 @@ contract VaultMock is IVaultMainMock, Vault {
         _removeLiquidity(poolData, params, minAmountsOutScaled18);
     }
 
-    function internalGetBufferUnderlyingSurplus(IERC4626 wrappedToken) external view returns (uint256) {
+    function internalGetBufferUnderlyingImbalance(IERC4626 wrappedToken) external view returns (int256) {
         bytes32 bufferBalance = _bufferTokenBalances[wrappedToken];
-        return bufferBalance.getBufferUnderlyingSurplus(wrappedToken);
+        return bufferBalance.getBufferUnderlyingImbalance(wrappedToken);
     }
 
-    function internalGetBufferWrappedSurplus(IERC4626 wrappedToken) external view returns (uint256) {
+    function internalGetBufferWrappedImbalance(IERC4626 wrappedToken) external view returns (int256) {
         bytes32 bufferBalance = _bufferTokenBalances[wrappedToken];
-        return bufferBalance.getBufferWrappedSurplus(wrappedToken);
+        return bufferBalance.getBufferWrappedImbalance(wrappedToken);
     }
 
     function getBufferTokenBalancesBytes(IERC4626 wrappedToken) external view returns (bytes32) {
@@ -667,6 +678,10 @@ contract VaultMock is IVaultMainMock, Vault {
         _bufferTotalShares[wrappedToken] = shares;
     }
 
+    function manualSetBufferBalances(IERC4626 wrappedToken, uint256 underlyingAmount, uint256 wrappedAmount) external {
+        _bufferTokenBalances[wrappedToken] = PackedTokenBalance.toPackedBalance(underlyingAmount, wrappedAmount);
+    }
+
     function manualErc4626BufferWrapOrUnwrapReentrancy(
         BufferWrapOrUnwrapParams memory params
     ) external nonReentrant returns (uint256 amountCalculatedRaw, uint256 amountInRaw, uint256 amountOutRaw) {
@@ -685,6 +700,18 @@ contract VaultMock is IVaultMainMock, Vault {
         return _findTokenIndex(tokens, token);
     }
 
+    function manualSetAddLiquidityCalledFlag(address pool, bool flag) public {
+        _addLiquidityCalled().tSet(_sessionIdSlot().tload(), pool, flag);
+    }
+
+    function manualGetAddLiquidityCalledFlagBySession(address pool, uint256 sessionId) public view returns (bool) {
+        return _addLiquidityCalled().tGet(sessionId, pool);
+    }
+
+    function manualGetCurrentUnlockSessionId() public view returns (uint256) {
+        return _sessionIdSlot().tload();
+    }
+
     function _getDefaultLiquidityManagement() private pure returns (LiquidityManagement memory) {
         LiquidityManagement memory liquidityManagement;
         liquidityManagement.enableAddLiquidityCustom = true;
@@ -694,5 +721,88 @@ contract VaultMock is IVaultMainMock, Vault {
 
     function manualSetPoolCreator(address pool, address newPoolCreator) public {
         _poolRoleAccounts[pool].poolCreator = newPoolCreator;
+    }
+
+    function ensureValidTradeAmount(uint256 tradeAmount) external view {
+        _ensureValidTradeAmount(tradeAmount);
+    }
+
+    function ensureValidSwapAmount(uint256 tradeAmount) external view {
+        _ensureValidSwapAmount(tradeAmount);
+    }
+
+    function manualUpdateAggregateSwapFeePercentage(address pool, uint256 newAggregateSwapFeePercentage) external {
+        _poolConfigBits[pool] = _manualSetAggregateSwapFeePercentage(
+            _poolConfigBits[pool],
+            newAggregateSwapFeePercentage
+        );
+    }
+
+    function _manualSetAggregateSwapFeePercentage(
+        PoolConfigBits config,
+        uint256 value
+    ) internal pure returns (PoolConfigBits) {
+        value /= FEE_SCALING_FACTOR;
+
+        return
+            PoolConfigBits.wrap(
+                PoolConfigBits.unwrap(config).insertUint(
+                    value,
+                    PoolConfigConst.AGGREGATE_SWAP_FEE_OFFSET,
+                    FEE_BITLENGTH
+                )
+            );
+    }
+
+    function previewDeposit(IERC4626 wrapper, uint256 amountInUnderlying) external returns (uint256 amountOutWrapped) {
+        if (amountInUnderlying == 0 || wrapper.previewDeposit(amountInUnderlying - 1) == 0) {
+            return 0;
+        }
+
+        (, amountOutWrapped, ) = _wrapWithBuffer(
+            SwapKind.EXACT_IN,
+            IERC20(wrapper.asset()),
+            wrapper,
+            amountInUnderlying
+        );
+    }
+
+    function previewMint(IERC4626 wrapper, uint256 amountOutWrapped) external returns (uint256 amountInUnderlying) {
+        if (amountOutWrapped == 0) {
+            return 0;
+        }
+
+        (amountInUnderlying, , ) = _wrapWithBuffer(
+            SwapKind.EXACT_OUT,
+            IERC20(wrapper.asset()),
+            wrapper,
+            amountOutWrapped
+        );
+    }
+
+    function previewRedeem(IERC4626 wrapper, uint256 amountInWrapped) external returns (uint256 amountOutUnderlying) {
+        if (amountInWrapped == 0 || wrapper.previewRedeem(amountInWrapped - 1) == 0) {
+            return 0;
+        }
+
+        (, amountOutUnderlying, ) = _unwrapWithBuffer(
+            SwapKind.EXACT_IN,
+            IERC20(wrapper.asset()),
+            wrapper,
+            amountInWrapped
+        );
+    }
+
+    function previewWithdraw(IERC4626 wrapper, uint256 amountOutUnderlying) external returns (uint256 amountInWrapped) {
+        if (amountOutUnderlying == 0) {
+            return 0;
+        }
+
+        (amountInWrapped, , ) = _unwrapWithBuffer(
+            SwapKind.EXACT_OUT,
+            IERC20(wrapper.asset()),
+            wrapper,
+            amountOutUnderlying
+        );
     }
 }

@@ -22,17 +22,17 @@ contract UnInitializedBufferTest is BaseVaultTest {
     }
 
     function testAddLiquidityToBufferUninitialized() public {
-        uint256 amountIn = 1e18;
+        uint256 exactSharesToIssue = 1e18;
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(IVaultErrors.BufferNotInitialized.selector, waDAI));
-        router.addLiquidityToBuffer(waDAI, amountIn, amountIn);
+        bufferRouter.addLiquidityToBuffer(waDAI, MAX_UINT128, MAX_UINT128, exactSharesToIssue);
     }
 
     function testRemoveLiquidityFromBufferUninitialized() public {
         uint256 sharesIn = 1e18;
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(IVaultErrors.BufferNotInitialized.selector, waDAI));
-        vault.removeLiquidityFromBuffer(waDAI, sharesIn);
+        vault.removeLiquidityFromBuffer(waDAI, sharesIn, 0, 0);
     }
 
     function testWrapUnwrapBufferUninitialized() public {

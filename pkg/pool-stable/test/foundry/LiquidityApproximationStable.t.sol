@@ -17,8 +17,9 @@ import { LiquidityApproximationTest } from "@balancer-labs/v3-vault/test/foundry
 
 import { StablePoolFactory } from "../../contracts/StablePoolFactory.sol";
 import { StablePool } from "../../contracts/StablePool.sol";
+import { StablePoolContractsDeployer } from "./utils/StablePoolContractsDeployer.sol";
 
-contract LiquidityApproximationStableTest is LiquidityApproximationTest {
+contract LiquidityApproximationStableTest is LiquidityApproximationTest, StablePoolContractsDeployer {
     using CastingHelpers for address[];
 
     uint256 poolCreationNonce;
@@ -41,29 +42,48 @@ contract LiquidityApproximationStableTest is LiquidityApproximationTest {
         maxSwapFeePercentage = IBasePool(swapPool).getMaximumSwapFeePercentage();
     }
 
-    function _createPool(address[] memory tokens, string memory label) internal override returns (address) {
-        StablePoolFactory factory = new StablePoolFactory(IVault(address(vault)), 365 days, "Factory v1", "Pool v1");
+    function _createPool(
+        address[] memory tokens,
+        string memory label
+    ) internal override returns (address newPool, bytes memory poolArgs) {
+        string memory name = "Stable Pool";
+        string memory symbol = "STABLE";
+        string memory poolVersion = "Pool v1";
+
+        StablePoolFactory factory = deployStablePoolFactory(
+            IVault(address(vault)),
+            365 days,
+            "Factory v1",
+            poolVersion
+        );
         PoolRoleAccounts memory roleAccounts;
 
         // Allow pools created by `factory` to use PoolHooksMock hooks.
         PoolHooksMock(poolHooksContract).allowFactory(address(factory));
 
-        StablePool newPool = StablePool(
-            factory.create(
-                "ERC20 Pool",
-                "ERC20POOL",
-                vault.buildTokenConfig(tokens.asIERC20()),
-                DEFAULT_AMP_FACTOR,
-                roleAccounts,
-                0.01e16, // Initial swap fee: 0.01%
-                poolHooksContract,
-                false, // Do not enable donations
-                false, // Do not disable unbalanced add/remove liquidity
-                ZERO_BYTES32
-            )
+        newPool = factory.create(
+            name,
+            symbol,
+            vault.buildTokenConfig(tokens.asIERC20()),
+            DEFAULT_AMP_FACTOR,
+            roleAccounts,
+            0.01e16, // Initial swap fee: 0.01%
+            poolHooksContract,
+            false, // Do not enable donations
+            false, // Do not disable unbalanced add/remove liquidity
+            ZERO_BYTES32
         );
-        vm.label(address(newPool), label);
-        return address(newPool);
+        vm.label(newPool, label);
+
+        poolArgs = abi.encode(
+            StablePool.NewPoolParams({
+                name: name,
+                symbol: symbol,
+                amplificationParameter: DEFAULT_AMP_FACTOR,
+                version: poolVersion
+            }),
+            vault
+        );
     }
 
     // Tests varying Amplification Parameter
@@ -140,7 +160,7 @@ contract LiquidityApproximationStableTest is LiquidityApproximationTest {
         assertLiquidityOperation(amountOut, swapFeePercentage, false);
     }
 
-    /// Utils
+    // Utils
 
     function _setAmplificationParameterAndSwapFee(
         uint256 swapFeePercentage,

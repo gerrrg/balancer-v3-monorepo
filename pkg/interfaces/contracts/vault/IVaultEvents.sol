@@ -2,12 +2,12 @@
 
 pragma solidity ^0.8.24;
 
-import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { IERC4626 } from "@openzeppelin/contracts/interfaces/IERC4626.sol";
+import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
+import { IProtocolFeeController } from "./IProtocolFeeController.sol";
 import { IAuthorizer } from "./IAuthorizer.sol";
 import { IHooks } from "./IHooks.sol";
-import { IProtocolFeeController } from "./IProtocolFeeController.sol";
 import "./VaultTypes.sol";
 
 /// @dev Events are declared inside an interface (namespace) to improve DX with Typechain.
@@ -49,7 +49,6 @@ interface IVaultEvents {
      * @param amountOut Number of tokenOut tokens
      * @param swapFeePercentage Swap fee percentage applied (can differ if dynamic)
      * @param swapFeeAmount Swap fee amount paid
-     * @param swapFeeToken Token the swap fee was paid in
      */
     event Swap(
         address indexed pool,
@@ -58,45 +57,72 @@ interface IVaultEvents {
         uint256 amountIn,
         uint256 amountOut,
         uint256 swapFeePercentage,
-        uint256 swapFeeAmount,
-        IERC20 swapFeeToken
+        uint256 swapFeeAmount
     );
 
     /**
      * @notice A wrap operation has occurred.
-     * @param underlyingToken The underlying token address
      * @param wrappedToken The wrapped token address
      * @param depositedUnderlying Number of underlying tokens deposited
      * @param mintedShares Number of shares (wrapped tokens) minted
+     * @param bufferBalances The final buffer balances, packed in 128-bit words (underlying, wrapped)
      */
     event Wrap(
-        IERC20 indexed underlyingToken,
         IERC4626 indexed wrappedToken,
         uint256 depositedUnderlying,
-        uint256 mintedShares
+        uint256 mintedShares,
+        bytes32 bufferBalances
     );
 
     /**
      * @notice An unwrap operation has occurred.
      * @param wrappedToken The wrapped token address
-     * @param underlyingToken The underlying token address
      * @param burnedShares Number of shares (wrapped tokens) burned
      * @param withdrawnUnderlying Number of underlying tokens withdrawn
+     * @param bufferBalances The final buffer balances, packed in 128-bit words (underlying, wrapped)
      */
     event Unwrap(
         IERC4626 indexed wrappedToken,
-        IERC20 indexed underlyingToken,
         uint256 burnedShares,
-        uint256 withdrawnUnderlying
+        uint256 withdrawnUnderlying,
+        bytes32 bufferBalances
     );
 
     /**
-     * @notice Pool balances have changed (e.g., after initialization, add/remove liquidity).
-     * @param pool The pool being registered
+     * @notice Liquidity has been added to a pool (including initialization).
+     * @param pool The pool with liquidity added
      * @param liquidityProvider The user performing the operation
-     * @param deltas The amount each token changed, sorted in the pool tokens' order
+     * @param kind The add liquidity operation type (e.g., proportional, custom)
+     * @param totalSupply The total supply of the pool after the operation
+     * @param amountsAddedRaw The amount of each token that was added, sorted in token registration order
+     * @param swapFeeAmountsRaw The total swap fees charged, sorted in token registration order
      */
-    event PoolBalanceChanged(address indexed pool, address indexed liquidityProvider, int256[] deltas);
+    event LiquidityAdded(
+        address indexed pool,
+        address indexed liquidityProvider,
+        AddLiquidityKind indexed kind,
+        uint256 totalSupply,
+        uint256[] amountsAddedRaw,
+        uint256[] swapFeeAmountsRaw
+    );
+
+    /**
+     * @notice Liquidity has been removed from a pool.
+     * @param pool The pool with liquidity removed
+     * @param liquidityProvider The user performing the operation
+     * @param kind The remove liquidity operation type (e.g., proportional, custom)
+     * @param totalSupply The total supply of the pool after the operation
+     * @param amountsRemovedRaw The amount of each token that was removed, sorted in token registration order
+     * @param swapFeeAmountsRaw The total swap fees charged, sorted in token registration order
+     */
+    event LiquidityRemoved(
+        address indexed pool,
+        address indexed liquidityProvider,
+        RemoveLiquidityKind indexed kind,
+        uint256 totalSupply,
+        uint256[] amountsRemovedRaw,
+        uint256[] swapFeeAmountsRaw
+    );
 
     /**
      * @notice The Vault's pause status has changed.
@@ -104,8 +130,11 @@ interface IVaultEvents {
      */
     event VaultPausedStateChanged(bool paused);
 
-    /// @notice `disableQuery` has been called on the Vault, permanently disabling query functionality.
+    /// @notice `disableQuery` has been called on the Vault, disabling query functionality.
     event VaultQueriesDisabled();
+
+    /// @notice `enableQuery` has been called on the Vault, enabling query functionality.
+    event VaultQueriesEnabled();
 
     /**
      * @notice A Pool's pause status has changed.
@@ -128,6 +157,22 @@ interface IVaultEvents {
     event PoolRecoveryModeStateChanged(address indexed pool, bool recoveryMode);
 
     /**
+     * @notice A protocol or pool creator fee has changed, causing an update to the aggregate swap fee.
+     * @dev The `ProtocolFeeController` will emit an event with the underlying change.
+     * @param pool The pool whose aggregate swap fee percentage changed
+     * @param aggregateSwapFeePercentage The new aggregate swap fee percentage
+     */
+    event AggregateSwapFeePercentageChanged(address indexed pool, uint256 aggregateSwapFeePercentage);
+
+    /**
+     * @notice A protocol or pool creator fee has changed, causing an update to the aggregate yield fee.
+     * @dev The `ProtocolFeeController` will emit an event with the underlying change.
+     * @param pool The pool whose aggregate yield fee percentage changed
+     * @param aggregateYieldFeePercentage The new aggregate yield fee percentage
+     */
+    event AggregateYieldFeePercentageChanged(address indexed pool, uint256 aggregateYieldFeePercentage);
+
+    /**
      * @notice A new authorizer is set by `setAuthorizer`.
      * @param newAuthorizer The address of the new authorizer
      */
@@ -146,8 +191,14 @@ interface IVaultEvents {
      * @param wrappedToken The wrapped token that identifies the buffer
      * @param amountUnderlying The amount of the underlying token that was deposited
      * @param amountWrapped The amount of the wrapped token that was deposited
+     * @param bufferBalances The final buffer balances, packed in 128-bit words (underlying, wrapped)
      */
-    event LiquidityAddedToBuffer(IERC4626 indexed wrappedToken, uint256 amountUnderlying, uint256 amountWrapped);
+    event LiquidityAddedToBuffer(
+        IERC4626 indexed wrappedToken,
+        uint256 amountUnderlying,
+        uint256 amountWrapped,
+        bytes32 bufferBalances
+    );
 
     /**
      * @notice Buffer shares were minted for an ERC4626 buffer corresponding to a given wrapped token.
@@ -176,12 +227,17 @@ interface IVaultEvents {
     /**
      * @notice Liquidity was removed from an ERC4626 buffer.
      * @dev The underlying token can be derived from the wrapped token, so it's not included here.
-     *
      * @param wrappedToken The wrapped token that identifies the buffer
      * @param amountUnderlying The amount of the underlying token that was withdrawn
      * @param amountWrapped The amount of the wrapped token that was withdrawn
+     * @param bufferBalances The final buffer balances, packed in 128-bit words (underlying, wrapped)
      */
-    event LiquidityRemovedFromBuffer(IERC4626 indexed wrappedToken, uint256 amountUnderlying, uint256 amountWrapped);
+    event LiquidityRemovedFromBuffer(
+        IERC4626 indexed wrappedToken,
+        uint256 amountUnderlying,
+        uint256 amountWrapped,
+        bytes32 bufferBalances
+    );
 
     /**
      * @notice The Vault buffers pause status has changed.
@@ -191,4 +247,12 @@ interface IVaultEvents {
      * @param paused True if the Vault buffers were paused
      */
     event VaultBuffersPausedStateChanged(bool paused);
+
+    /**
+     * @notice Pools can use this event to emit event data from the Vault.
+     * @param pool Pool address
+     * @param eventKey Event key
+     * @param eventData Encoded event data
+     */
+    event VaultAuxiliary(address indexed pool, bytes32 indexed eventKey, bytes eventData);
 }

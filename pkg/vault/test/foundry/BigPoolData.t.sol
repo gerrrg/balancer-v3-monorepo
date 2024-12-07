@@ -30,7 +30,10 @@ contract BigPoolDataTest is BaseVaultTest {
         BaseVaultTest.setUp();
     }
 
-    function createPool() internal override returns (address) {
+    function createPool() internal override returns (address newPool, bytes memory poolArgs) {
+        string memory name = "Big Pool";
+        string memory symbol = "BIGPOOL";
+
         uint256 numTokens = vault.getMaximumPoolTokens();
 
         bigPoolRateProviders = new IRateProvider[](numTokens);
@@ -40,16 +43,16 @@ contract BigPoolDataTest is BaseVaultTest {
         for (uint8 i = 0; i < numTokens; ++i) {
             bigPoolTokens[i] = createERC20(string.concat("TKN", Strings.toString(i)), 18 - i);
             ERC20TestToken(address(bigPoolTokens[i])).mint(lp, poolInitAmount);
-            bigPoolRateProviders[i] = new RateProviderMock();
+            bigPoolRateProviders[i] = deployRateProviderMock();
             initAmounts[i] = poolInitAmount;
         }
 
-        address newPool = address(new PoolMock(IVault(address(vault)), "Big Pool", "BIGPOOL"));
+        newPool = address(deployPoolMock(IVault(address(vault)), name, symbol));
 
         _approveForPool(IERC20(newPool));
 
         factoryMock.registerTestPool(
-            address(newPool),
+            newPool,
             vault.buildTokenConfig(bigPoolTokens, bigPoolRateProviders),
             poolHooksContract,
             lp
@@ -63,7 +66,7 @@ contract BigPoolDataTest is BaseVaultTest {
             bigPoolRateProviders[i] = tokenInfo[i].rateProvider;
         }
 
-        return newPool;
+        poolArgs = abi.encode(vault, name, symbol);
     }
 
     function initPool() internal override {
@@ -122,15 +125,9 @@ contract BigPoolDataTest is BaseVaultTest {
             assertEq(data.tokenRates[i], rates[i]);
 
             if (roundUp) {
-                expectedLiveBalance = FixedPoint.mulUp(
-                    expectedRawBalances[i],
-                    expectedScalingFactors[i].mulUp(rates[i])
-                );
+                expectedLiveBalance = FixedPoint.mulUp(expectedRawBalances[i] * expectedScalingFactors[i], rates[i]);
             } else {
-                expectedLiveBalance = FixedPoint.mulDown(
-                    expectedRawBalances[i],
-                    expectedScalingFactors[i].mulDown(rates[i])
-                );
+                expectedLiveBalance = FixedPoint.mulDown(expectedRawBalances[i] * expectedScalingFactors[i], rates[i]);
             }
 
             assertEq(data.balancesLiveScaled18[i], expectedLiveBalance);

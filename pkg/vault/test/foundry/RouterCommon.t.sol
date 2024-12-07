@@ -6,10 +6,15 @@ import "forge-std/Test.sol";
 
 import { SafeCast } from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import { IAllowanceTransfer } from "permit2/src/interfaces/IAllowanceTransfer.sol";
 
+import { IRouterCommon } from "@balancer-labs/v3-interfaces/contracts/vault/IRouterCommon.sol";
 import { IVault } from "@balancer-labs/v3-interfaces/contracts/vault/IVault.sol";
 
 import { ReentrancyAttack } from "@balancer-labs/v3-solidity-utils/contracts/test/ReentrancyAttack.sol";
+import {
+    ReentrancyGuardTransient
+} from "@balancer-labs/v3-solidity-utils/contracts/openzeppelin/ReentrancyGuardTransient.sol";
 import { StorageSlotExtension } from "@balancer-labs/v3-solidity-utils/contracts/openzeppelin/StorageSlotExtension.sol";
 
 import { BaseVaultTest } from "./utils/BaseVaultTest.sol";
@@ -23,12 +28,12 @@ contract RouterCommonTest is BaseVaultTest {
     function setUp() public virtual override {
         super.setUp();
 
-        routerMock = new RouterCommonMock(IVault(address(vault)), weth, permit2);
+        routerMock = deployRouterCommonMock(IVault(address(vault)), weth, permit2);
         reentrancyAttack = new ReentrancyAttack();
     }
 
     function testConstructor() external {
-        RouterCommonMock anotherRouter = new RouterCommonMock(IVault(address(vault)), weth, permit2);
+        RouterCommonMock anotherRouter = deployRouterCommonMock(IVault(address(vault)), weth, permit2);
         assertEq(address(anotherRouter.getVault()), address(vault), "Vault is wrong");
         assertEq(address(anotherRouter.getWeth()), address(weth), "Weth is wrong");
         assertEq(address(anotherRouter.getPermit2()), address(permit2), "Permit2 is wrong");
@@ -154,6 +159,54 @@ contract RouterCommonTest is BaseVaultTest {
         assertEq(vars.bobWethAfter, vars.bobWethBefore + amountToWithdraw, "Bob WETH balance is wrong");
         assertEq(vars.vaultWethAfter, vars.vaultWethBefore - amountToWithdraw, "Vault WETH balance is wrong");
         assertEq(vars.wethDeltaAfter, vars.wethDeltaBefore + int256(amountToWithdraw), "Vault delta is wrong");
+    }
+
+    function testSaveSenderAndManageEthModifierWithSingleFunction() public {
+        uint256 balanceBefore = alice.balance;
+        vm.prank(alice);
+        routerMock.multicall{ value: 1 ether }(new bytes[](0));
+        uint256 balanceAfter = alice.balance;
+
+        assertEq(balanceAfter, balanceBefore, "Value wasn't returned");
+    }
+
+    function testSaveSenderAndManageEthModifierWithMultipleFunctions() public {
+        uint256 extraAmount = 0.5 ether;
+        uint256 balanceBefore = alice.balance;
+
+        bytes[] memory calls = new bytes[](3);
+        // Send extra ETH to the mock contract
+        calls[0] = abi.encodeWithSelector(RouterCommonMock.sendExtraEth.selector, alice, extraAmount);
+        // Try to return the extra ETH but this function will ignore sending the ETH back
+        calls[1] = abi.encodeWithSelector(RouterCommonMock.manualReturnETH.selector);
+        // Assert that the manualReturnETH function didn't send the ETH back
+        calls[2] = abi.encodeWithSelector(RouterCommonMock.assertETHBalance.selector, balanceBefore - extraAmount);
+
+        vm.prank(alice);
+        routerMock.multicall{ value: 1 ether }(calls);
+        uint256 balanceAfter = alice.balance;
+
+        assertEq(balanceAfter, balanceBefore, "Value wasn't returned");
+    }
+
+    function testNestedMulticall() public {
+        bytes[] memory calls = new bytes[](1);
+        calls[0] = abi.encodeWithSelector(RouterCommonMock.manualMulticallVoid.selector);
+
+        vm.expectRevert(ReentrancyGuardTransient.ReentrancyGuardReentrantCall.selector);
+        // Multicall a function that calls multicall again.
+        vm.prank(alice);
+        routerMock.multicall(calls);
+    }
+
+    function testPermitBatchReentrancy() public {
+        IRouterCommon.PermitApproval[] memory permitBatch;
+        bytes[] memory permitSignatures;
+        IAllowanceTransfer.PermitBatch memory permit2Batch;
+        bytes memory permit2Signature;
+
+        vm.expectRevert(ReentrancyGuardTransient.ReentrancyGuardReentrantCall.selector);
+        routerMock.manualPermitBatchReentrancy(permitBatch, permitSignatures, permit2Batch, permit2Signature);
     }
 
     struct EthStateTest {

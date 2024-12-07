@@ -18,6 +18,7 @@ import {
 } from "@balancer-labs/v3-interfaces/contracts/vault/VaultTypes.sol";
 
 import { ERC4626TestToken } from "@balancer-labs/v3-solidity-utils/contracts/test/ERC4626TestToken.sol";
+import { ERC20TestToken } from "@balancer-labs/v3-solidity-utils/contracts/test/ERC20TestToken.sol";
 
 import { PoolFactoryMock } from "../../contracts/test/PoolFactoryMock.sol";
 import { PoolHooksMock } from "../../contracts/test/PoolHooksMock.sol";
@@ -43,7 +44,7 @@ contract VaultTokenTest is BaseVaultTest {
 
         cDAI = new ERC4626TestToken(dai, "Wrapped cDAI", "cDAI", 18);
 
-        poolFactory = new PoolFactoryMock(vault, 365 days);
+        poolFactory = deployPoolFactoryMock(vault, 365 days);
 
         // Allow pools from factory poolFactory to use the hook PoolHooksMock.
         PoolHooksMock(poolHooksContract).allowFactory(address(poolFactory));
@@ -51,11 +52,11 @@ contract VaultTokenTest is BaseVaultTest {
         (daiIdx, usdcIdx) = getSortedIndexes(address(dai), address(usdc));
         (waDaiIdx, waUsdcIdx) = getSortedIndexes(address(waDAI), address(waUSDC));
 
-        pool = address(new PoolMock(IVault(address(vault)), "ERC20 Pool", "ERC20POOL"));
+        pool = address(deployPoolMock(IVault(address(vault)), "ERC20 Pool", "ERC20POOL"));
     }
 
-    function createPool() internal pure override returns (address) {
-        return address(0);
+    function createPool() internal pure override returns (address, bytes memory) {
+        return (address(0), new bytes(0));
     }
 
     function initPool() internal override {
@@ -96,6 +97,22 @@ contract VaultTokenTest is BaseVaultTest {
         tokenConfig[localUsdcIdx].token = IERC20(usdc);
 
         vm.expectRevert(IVaultErrors.InvalidTokenConfiguration.selector);
+        _registerPool(tokenConfig);
+    }
+
+    function testInvalidTokenDecimals() public {
+        // This is technically a duplicate test (see `testRegisterSetWrongTokenDecimalDiffs` in Registration.t.sol),
+        // but doesn't use a mockCall.
+        TokenConfig[] memory tokenConfig = new TokenConfig[](2);
+        ERC20TestToken invalidToken = createERC20("INV", 19);
+        uint256 invalidIdx;
+
+        (invalidIdx, usdcIdx) = getSortedIndexes(address(invalidToken), address(usdc));
+
+        tokenConfig[invalidIdx].token = IERC20(invalidToken);
+        tokenConfig[usdcIdx].token = IERC20(usdc);
+
+        vm.expectRevert(IVaultErrors.InvalidTokenDecimals.selector);
         _registerPool(tokenConfig);
     }
 

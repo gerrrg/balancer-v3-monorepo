@@ -5,21 +5,21 @@ pragma solidity ^0.8.24;
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { IPermit2 } from "permit2/src/interfaces/IPermit2.sol";
 
-import { IVault } from "@balancer-labs/v3-interfaces/contracts/vault/IVault.sol";
 import { IWETH } from "@balancer-labs/v3-interfaces/contracts/solidity-utils/misc/IWETH.sol";
+import { IVault } from "@balancer-labs/v3-interfaces/contracts/vault/IVault.sol";
 
 import {
     TransientEnumerableSet
 } from "@balancer-labs/v3-solidity-utils/contracts/openzeppelin/TransientEnumerableSet.sol";
 import {
     TransientStorageHelpers,
-    AddressMappingSlot
+    AddressToUintMappingSlot
 } from "@balancer-labs/v3-solidity-utils/contracts/helpers/TransientStorageHelpers.sol";
 
 import { RouterCommon } from "./RouterCommon.sol";
 
 /// @notice Transient storage for Batch and Composite Liquidity Router operations.
-contract BatchRouterCommon is RouterCommon {
+abstract contract BatchRouterCommon is RouterCommon {
     using TransientEnumerableSet for TransientEnumerableSet.AddressSet;
     using TransientStorageHelpers for *;
 
@@ -40,7 +40,12 @@ contract BatchRouterCommon is RouterCommon {
     // solhint-enable var-name-mixedcase
     // solhint-disable no-inline-assembly
 
-    constructor(IVault vault, IWETH weth, IPermit2 permit2) RouterCommon(vault, weth, permit2) {
+    constructor(
+        IVault vault,
+        IWETH weth,
+        IPermit2 permit2,
+        string memory routerVersion
+    ) RouterCommon(vault, weth, permit2, routerVersion) {
         // solhint-disable-previous-line no-empty-blocks
     }
 
@@ -61,21 +66,21 @@ contract BatchRouterCommon is RouterCommon {
     }
 
     // token in -> amount: tracks token in amounts within a batch swap.
-    function _currentSwapTokenInAmounts() internal view returns (AddressMappingSlot slot) {
-        return AddressMappingSlot.wrap(_CURRENT_SWAP_TOKEN_IN_AMOUNTS_SLOT);
+    function _currentSwapTokenInAmounts() internal view returns (AddressToUintMappingSlot slot) {
+        return AddressToUintMappingSlot.wrap(_CURRENT_SWAP_TOKEN_IN_AMOUNTS_SLOT);
     }
 
     // token out -> amount: tracks token out amounts within a batch swap.
-    function _currentSwapTokenOutAmounts() internal view returns (AddressMappingSlot slot) {
-        return AddressMappingSlot.wrap(_CURRENT_SWAP_TOKEN_OUT_AMOUNTS_SLOT);
+    function _currentSwapTokenOutAmounts() internal view returns (AddressToUintMappingSlot slot) {
+        return AddressToUintMappingSlot.wrap(_CURRENT_SWAP_TOKEN_OUT_AMOUNTS_SLOT);
     }
 
     // token -> amount that is part of the current input / output amounts, but is settled preemptively.
     // This situation happens whenever there is BPT involved in the operation, which is minted and burned instantly.
     // Since those amounts are not tracked in the inputs / outputs to settle, we need to track them elsewhere
     // to return the correct total amounts in and out for each token involved in the operation.
-    function _settledTokenAmounts() internal view returns (AddressMappingSlot slot) {
-        return AddressMappingSlot.wrap(_SETTLED_TOKEN_AMOUNTS_SLOT);
+    function _settledTokenAmounts() internal view returns (AddressToUintMappingSlot slot) {
+        return AddressToUintMappingSlot.wrap(_SETTLED_TOKEN_AMOUNTS_SLOT);
     }
 
     function _calculateBatchRouterStorageSlot(string memory key) internal pure returns (bytes32) {
@@ -86,7 +91,7 @@ contract BatchRouterCommon is RouterCommon {
                                     Settlement
     *******************************************************************************/
 
-    /// @notice Settles batch and composite liquidity operations, after debts and credits are computed.
+    /// @notice Settles batch and composite liquidity operations, after credits and debits are computed.
     function _settlePaths(address sender, bool wethIsEth) internal {
         // numTokensIn / Out may be 0 if the inputs and / or outputs are not transient.
         // For example, a swap starting with a 'remove liquidity' step will already have burned the input tokens,
@@ -100,7 +105,7 @@ contract BatchRouterCommon is RouterCommon {
         for (int256 i = int256(numTokensIn - 1); i >= 0; --i) {
             address tokenIn = _currentSwapTokensIn().unchecked_at(uint256(i));
             _takeTokenIn(sender, IERC20(tokenIn), _currentSwapTokenInAmounts().tGet(tokenIn), wethIsEth);
-            // Erases delta, in case more than one batch router op is called in the same transaction
+            // Erases delta, in case more than one batch router operation is called in the same transaction.
             _currentSwapTokenInAmounts().tSet(tokenIn, 0);
             _currentSwapTokensIn().remove(tokenIn);
         }
@@ -108,7 +113,7 @@ contract BatchRouterCommon is RouterCommon {
         for (int256 i = int256(numTokensOut - 1); i >= 0; --i) {
             address tokenOut = _currentSwapTokensOut().unchecked_at(uint256(i));
             _sendTokenOut(sender, IERC20(tokenOut), _currentSwapTokenOutAmounts().tGet(tokenOut), wethIsEth);
-            // Erases delta, in case more than one batch router op is called in the same transaction.
+            // Erases delta, in case more than one batch router operation is called in the same transaction.
             _currentSwapTokenOutAmounts().tSet(tokenOut, 0);
             _currentSwapTokensOut().remove(tokenOut);
         }

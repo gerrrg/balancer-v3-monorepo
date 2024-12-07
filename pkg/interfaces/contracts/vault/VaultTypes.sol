@@ -24,7 +24,19 @@ struct LiquidityManagement {
 // @notice Custom type to store the entire configuration of the pool.
 type PoolConfigBits is bytes32;
 
-/// @notice Represents a pool's configuration (hooks configuration are separated in another struct).
+/**
+ * @notice Represents a pool's configuration (hooks configuration are separated in another struct).
+ * @param liquidityManagement Flags related to adding/removing liquidity
+ * @param staticSwapFeePercentage The pool's native swap fee
+ * @param aggregateSwapFeePercentage The total swap fee charged, including protocol and pool creator components
+ * @param aggregateYieldFeePercentage The total swap fee charged, including protocol and pool creator components
+ * @param tokenDecimalDiffs Compressed storage of the token decimals of each pool token
+ * @param pauseWindowEndTime Timestamp after which the pool cannot be paused
+ * @param isPoolRegistered If true, the pool has been registered with the Vault
+ * @param isPoolInitialized If true, the pool has been initialized with liquidity, and is available for trading
+ * @param isPoolPaused If true, the pool has been paused (by governance or the pauseManager)
+ * @param isPoolInRecoveryMode If true, the pool has been placed in recovery mode, enabling recovery mode withdrawals
+ */
 struct PoolConfig {
     LiquidityManagement liquidityManagement;
     uint256 staticSwapFeePercentage;
@@ -72,7 +84,13 @@ struct HooksConfig {
     address hooksContract;
 }
 
-/// @notice Represents temporary state used in a swap operation.
+/**
+ * @notice Represents temporary state used during a swap operation.
+ * @param indexIn The zero-based index of tokenIn
+ * @param indexOut The zero-based index of tokenOut
+ * @param amountGivenScaled18 The amountGiven (i.e., tokenIn for ExactIn), adjusted for token decimals
+ * @param swapFeePercentage The swap fee to be applied (might be static or dynamic)
+ */
 struct SwapState {
     uint256 indexIn;
     uint256 indexOut;
@@ -82,9 +100,8 @@ struct SwapState {
 
 /**
  * @notice Represents the Vault's configuration.
- * @param isQueryDisabled If set to true, disables query functionality of the Vault. Can be modified only by
- * governance.
- * @param isVaultPaused If set to true, Swaps and Add/Remove Liquidity operations are halted
+ * @param isQueryDisabled If set to true, disables query functionality of the Vault. Can be modified by governance
+ * @param isVaultPaused If set to true, swaps and add/remove liquidity operations are halted
  * @param areBuffersPaused If set to true, the Vault wrap/unwrap primitives associated with buffers will be disabled
  */
 struct VaultState {
@@ -95,15 +112,67 @@ struct VaultState {
 
 /**
  * @notice Represents the accounts holding certain roles for a given pool. This is passed in on pool registration.
- * @param pauseManager Account empowered to pause/unpause the pool (or 0 to delegate to governance)
+ * @param pauseManager Account empowered to pause/unpause the pool (note that governance can always pause a pool)
  * @param swapFeeManager Account empowered to set static swap fees for a pool (or 0 to delegate to governance)
- * @param poolCreator Account empowered to set the pool creator fee percentage
+ * @param poolCreator Account empowered to set the pool creator fee (or 0 if all fees go to the protocol and LPs)
  */
 struct PoolRoleAccounts {
     address pauseManager;
     address swapFeeManager;
     address poolCreator;
 }
+
+/*******************************************************************************
+                                   Tokens
+*******************************************************************************/
+
+// Note that the following tokens are unsupported by the Vault. This list is not meant to be exhaustive, but covers
+// many common types of tokens that will not work with the Vault architecture. (See https://github.com/d-xo/weird-erc20
+// for examples of token features that are problematic for many protocols.)
+//
+// * Rebasing tokens (e.g., aDAI). The Vault keeps track of token balances in its internal accounting; any token whose
+//   balance changes asynchronously (i.e., outside a swap or liquidity operation), would get out-of-sync with this
+//   internal accounting. This category would also include "airdrop" tokens, whose balances can change unexpectedly.
+//
+// * Double entrypoint (e.g., old Synthetix tokens, now fixed). These could likewise bypass internal accounting by
+//   registering the token under one address, then accessing it through another. This is especially troublesome
+//   in v3, with the introduction of ERC4626 buffers.
+//
+// * Fee on transfer (e.g., PAXG). The Vault issues credits and debits according to given and calculated token amounts,
+//   and settlement assumes that the send/receive transfer functions transfer exactly the given number of tokens.
+//   If this is not the case, transactions will not settle. Unlike with the other types, which are fundamentally
+//   incompatible, it would be possible to design a Router to handle this - but we didn't try it. In any case, it's
+//   not supported in the current Routers.
+//
+// * Tokens with more than 18 decimals (e.g., YAM-V2). The Vault handles token scaling: i.e., handling I/O for
+//   amounts in native token decimals, but doing calculations with full 18-decimal precision. This requires reading
+//   and storing the decimals for each token. Since virtually all tokens are 18 or fewer decimals, and we have limited
+//   storage space, 18 was a reasonable maximum. Unlike the other types, this is enforceable by the Vault. Attempting
+//   to register such tokens will revert with `InvalidTokenDecimals`. Of course, we must also be able to read the token
+//   decimals, so the Vault only supports tokens that implement `IERC20Metadata.decimals`, and return a value less than
+//   or equal to 18.
+//
+//  * Token decimals are checked and stored only once, on registration. Valid tokens store their decimals as immutable
+//    variables or constants. Malicious tokens that don't respect this basic property would not work anywhere in DeFi.
+//
+// These types of tokens are supported but discouraged, as they don't tend to play well with AMMs generally.
+//
+// * Very low-decimal tokens (e.g., GUSD). The Vault has been extensively tested with 6-decimal tokens (e.g., USDC),
+//   but going much below that may lead to unanticipated effects due to precision loss, especially with smaller trade
+//   values.
+//
+// * Revert on zero value approval/transfer. The Vault has been tested against these, but peripheral contracts, such
+//   as hooks, might not have been designed with this in mind.
+//
+// * Other types from "weird-erc20," such as upgradeable, pausable, or tokens with blocklists. We have seen cases
+//   where a token upgrade fails, "bricking" the token - and many operations on pools containing that token. Any
+//   sort of "permissioned" token that can make transfers fail can cause operations on pools containing them to
+//   revert. Even Recovery Mode cannot help then, as it does a proportional withdrawal of all tokens. If one of
+//   them is bricked, the whole operation will revert. Since v3 does not have "internal balances" like v2, there
+//   is no recourse.
+//
+//   Of course, many tokens in common use have some of these "features" (especially centralized stable coins), so
+//   we have to support them anyway. Working with common centralized tokens is a risk common to all of DeFi.
 
 /**
  * @notice Token types supported by the Vault.
@@ -164,13 +233,13 @@ struct TokenInfo {
 /**
  * @notice Data structure used to represent the current pool state in memory
  * @param poolConfigBits Custom type to store the entire configuration of the pool.
- * @param tokens Pool tokens, sorted in pool registration order
- * @param tokenInfo Configuration data for each token, sorted in pool registration order
+ * @param tokens Pool tokens, sorted in token registration order
+ * @param tokenInfo Configuration data for each token, sorted in token registration order
  * @param balancesRaw Token balances in native decimals
  * @param balancesLiveScaled18 Token balances after paying yield fees, applying decimal scaling and rates
  * @param tokenRates 18-decimal FP values for rate tokens (e.g., yield-bearing), or FP(1) for standard tokens
  * @param decimalScalingFactors Conversion factor used to adjust for token decimals for uniform precision in
- * calculations. FP(1) for 18-decimal tokens
+ * calculations. It is 1e18 (FP 1) for 18-decimal tokens
  */
 struct PoolData {
     PoolConfigBits poolConfigBits;
@@ -202,7 +271,7 @@ enum SwapKind {
 //
 // `PoolSwapParams` passes some of this information through (kind, userData), but "translates" the parameters to fit
 // the internal swap API used by `IBasePool`. It scales amounts to full 18-decimal precision, adds the token balances,
-// converts the raw token addresses to indices, and adds the address of the router originating the request. It does
+// converts the raw token addresses to indices, and adds the address of the Router originating the request. It does
 // not need the limit, since this is checked at the Router level.
 
 /**
@@ -256,7 +325,6 @@ struct PoolSwapParams {
  * @param tokenOutBalanceScaled18 Updated (after swap) balance of tokenOut
  * @param amountCalculatedScaled18 Token amount calculated by the swap
  * @param amountCalculatedRaw Token amount calculated by the swap
- * @param user Account originating the swap operation
  * @param router The address (usually a router contract) that initiated a swap operation on the Vault
  * @param pool Pool address
  * @param userData Additional (optional) data required for the swap
@@ -352,7 +420,6 @@ enum WrappingDirection {
  * @param amountGivenRaw Amount specified for tokenIn or tokenOut (depends on the type of swap and wrapping direction)
  * @param limitRaw Minimum or maximum amount specified for the other token (depends on the type of swap and wrapping
  * direction)
- * @param userData Optional user data
  */
 struct BufferWrapOrUnwrapParams {
     SwapKind kind;
@@ -360,11 +427,13 @@ struct BufferWrapOrUnwrapParams {
     IERC4626 wrappedToken;
     uint256 amountGivenRaw;
     uint256 limitRaw;
-    bytes userData;
 }
 
-// Protocol Fees are 24-bit values. We transform them by multiplying by 1e11, so
-// they can be set to any value between 0% and 100% (step 0.00001%).
+// Protocol Fees are 24-bit values. We transform them by multiplying by 1e11, so that they can be set to any value
+// between 0% and 100% (step 0.00001%). Protocol and pool creator fees are set in the `ProtocolFeeController`, and
+// ensure both constituent and aggregate fees do not exceed this precision.
 uint256 constant FEE_BITLENGTH = 24;
-uint256 constant MAX_FEE_PERCENTAGE = 1e18; // 100%
 uint256 constant FEE_SCALING_FACTOR = 1e11;
+// Used to ensure the safety of fee-related math (e.g., pools or hooks don't set it greater than 100%).
+// This value should work for practical purposes and is well within the max precision requirements.
+uint256 constant MAX_FEE_PERCENTAGE = 99.9999e16; // 99.9999%

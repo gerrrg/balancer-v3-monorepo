@@ -5,7 +5,7 @@ pragma solidity ^0.8.24;
 import { IAllowanceTransfer } from "permit2/src/interfaces/IAllowanceTransfer.sol";
 import { AddLiquidityKind, RemoveLiquidityKind } from "./VaultTypes.sol";
 
-/// @notice Interface for funtions shared between the `Router` and `BatchRouter`.
+/// @notice Interface for functions shared between the `Router` and `BatchRouter`.
 interface IRouterCommon {
     /**
      * @notice Data for the add liquidity hook.
@@ -49,9 +49,9 @@ interface IRouterCommon {
 
     /**
      * @notice Get the first sender which initialized the call to Router.
-     * @return address The sender address
+     * @return sender The address of the sender
      */
-    function getSender() external view returns (address);
+    function getSender() external view returns (address sender);
 
     /*******************************************************************************
                                          Utils
@@ -88,5 +88,5 @@ interface IRouterCommon {
      * @param data Encoded function calls to be executed in the batch.
      * @return results Array of bytes arrays, each representing the return data from each function call executed.
      */
-    function multicall(bytes[] calldata data) external returns (bytes[] memory results);
+    function multicall(bytes[] calldata data) external payable returns (bytes[] memory results);
 }

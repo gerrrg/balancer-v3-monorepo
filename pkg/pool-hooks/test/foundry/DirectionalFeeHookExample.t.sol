@@ -23,14 +23,18 @@ import { ArrayHelpers } from "@balancer-labs/v3-solidity-utils/contracts/test/Ar
 import { FixedPoint } from "@balancer-labs/v3-solidity-utils/contracts/math/FixedPoint.sol";
 import { StableMath } from "@balancer-labs/v3-solidity-utils/contracts/math/StableMath.sol";
 
+import { StablePool } from "@balancer-labs/v3-pool-stable/contracts/StablePool.sol";
 import { StablePoolFactory } from "@balancer-labs/v3-pool-stable/contracts/StablePoolFactory.sol";
+import {
+    StablePoolContractsDeployer
+} from "@balancer-labs/v3-pool-stable/test/foundry/utils/StablePoolContractsDeployer.sol";
 import { PoolMock } from "@balancer-labs/v3-vault/contracts/test/PoolMock.sol";
 
 import { BaseVaultTest } from "@balancer-labs/v3-vault/test/foundry/utils/BaseVaultTest.sol";
 
 import { DirectionalFeeHookExample } from "../../contracts/DirectionalFeeHookExample.sol";
 
-contract DirectionalHookExampleTest is BaseVaultTest {
+contract DirectionalHookExampleTest is StablePoolContractsDeployer, BaseVaultTest {
     using CastingHelpers for address[];
     using FixedPoint for uint256;
     using ArrayHelpers for *;
@@ -53,8 +57,8 @@ contract DirectionalHookExampleTest is BaseVaultTest {
     }
 
     function createHook() internal override returns (address) {
-        // Create the factory here, because it needs to be deployed after the vault, but before the hook contract.
-        stablePoolFactory = new StablePoolFactory(IVault(address(vault)), 365 days, "Factory v1", "Pool v1");
+        // Create the factory here, because it needs to be deployed after the Vault, but before the hook contract.
+        stablePoolFactory = deployStablePoolFactory(IVault(address(vault)), 365 days, "Factory v1", "Pool v1");
         // lp will be the owner of the hook. Only LP is able to set hook fee percentages.
         vm.prank(lp);
         directionalFeeHook = address(new DirectionalFeeHookExample(IVault(address(vault)), address(stablePoolFactory)));
@@ -62,7 +66,13 @@ contract DirectionalHookExampleTest is BaseVaultTest {
         return directionalFeeHook;
     }
 
-    function _createPool(address[] memory tokens, string memory label) internal override returns (address) {
+    function _createPool(
+        address[] memory tokens,
+        string memory label
+    ) internal override returns (address newPool, bytes memory poolArgs) {
+        string memory name = "Stable Pool Test";
+        string memory symbol = "STABLE-TEST";
+
         PoolRoleAccounts memory roleAccounts;
 
         vm.expectEmit(true, true, false, false);
@@ -72,10 +82,10 @@ contract DirectionalHookExampleTest is BaseVaultTest {
             address(0)
         );
 
-        address newPool = address(
+        newPool = address(
             stablePoolFactory.create(
-                "Stable Pool Test",
-                "STABLE-TEST",
+                name,
+                symbol,
                 vault.buildTokenConfig(tokens.asIERC20()),
                 DEFAULT_AMP_FACTOR,
                 roleAccounts,
@@ -92,7 +102,16 @@ contract DirectionalHookExampleTest is BaseVaultTest {
         vm.prank(admin);
         vault.setStaticSwapFeePercentage(newPool, SWAP_FEE_PERCENTAGE);
 
-        return newPool;
+        // poolArgs is used to check pool deployment address with create2.
+        poolArgs = abi.encode(
+            StablePool.NewPoolParams({
+                name: name,
+                symbol: symbol,
+                amplificationParameter: DEFAULT_AMP_FACTOR,
+                version: "Pool v1"
+            }),
+            vault
+        );
     }
 
     function testRegistryWithWrongFactory() public {
@@ -134,12 +153,13 @@ contract DirectionalHookExampleTest is BaseVaultTest {
             DEFAULT_AMP_FACTOR * StableMath.AMP_PRECISION,
             balancesBefore.poolTokens
         );
+        uint256 swapFeeAmount = daiExactAmountIn.mulUp(SWAP_FEE_PERCENTAGE);
         uint256 expectedAmountOut = StableMath.computeOutGivenExactIn(
             DEFAULT_AMP_FACTOR * StableMath.AMP_PRECISION,
             balancesBefore.poolTokens,
             daiIdx,
             usdcIdx,
-            daiExactAmountIn,
+            daiExactAmountIn - swapFeeAmount,
             poolInvariant
         );
 
@@ -151,11 +171,10 @@ contract DirectionalHookExampleTest is BaseVaultTest {
 
         // Measure the actual amount out, which should be `expectedAmountOut` - `swapFeeAmount`.
         uint256 actualAmountOut = balancesAfter.bobTokens[usdcIdx] - balancesBefore.bobTokens[usdcIdx];
-        uint256 swapFeeAmount = expectedAmountOut - actualAmountOut;
 
         // Check whether the calculated swap fee percentage equals the static fee percentage. It should,
         // since the pool was taken closer to equilibrium.
-        assertEq(swapFeeAmount, expectedAmountOut.mulUp(SWAP_FEE_PERCENTAGE), "Swap Fee Amount is wrong");
+        assertEq(expectedAmountOut, actualAmountOut, "Amount out is wrong");
 
         // Check Bob's balances (Bob deposited DAI to receive USDC)
         assertEq(
@@ -165,7 +184,7 @@ contract DirectionalHookExampleTest is BaseVaultTest {
         );
         assertEq(
             balancesAfter.bobTokens[usdcIdx] - balancesBefore.bobTokens[usdcIdx],
-            expectedAmountOut - swapFeeAmount,
+            expectedAmountOut,
             "Bob USDC balance is wrong"
         );
 
@@ -178,7 +197,7 @@ contract DirectionalHookExampleTest is BaseVaultTest {
         // Since the protocol swap fee is 0 (was not set in this test), all swap fee amounts are returned to the pool.
         assertEq(
             balancesBefore.poolTokens[usdcIdx] - balancesAfter.poolTokens[usdcIdx],
-            expectedAmountOut - swapFeeAmount,
+            expectedAmountOut,
             "Pool USDC balance is wrong"
         );
 
@@ -190,7 +209,7 @@ contract DirectionalHookExampleTest is BaseVaultTest {
         );
         assertEq(
             balancesBefore.vaultTokens[usdcIdx] - balancesAfter.vaultTokens[usdcIdx],
-            expectedAmountOut - swapFeeAmount,
+            expectedAmountOut,
             "Vault USDC balance is wrong"
         );
 
@@ -202,7 +221,7 @@ contract DirectionalHookExampleTest is BaseVaultTest {
         );
         assertEq(
             balancesBefore.vaultReserves[usdcIdx] - balancesAfter.vaultReserves[usdcIdx],
-            expectedAmountOut - swapFeeAmount,
+            expectedAmountOut,
             "Vault USDC reserve is wrong"
         );
     }
@@ -220,14 +239,6 @@ contract DirectionalHookExampleTest is BaseVaultTest {
         uint256 poolInvariant = StableMath.computeInvariant(
             DEFAULT_AMP_FACTOR * StableMath.AMP_PRECISION,
             balancesScaled18
-        );
-        uint256 expectedAmountOut = StableMath.computeOutGivenExactIn(
-            DEFAULT_AMP_FACTOR * StableMath.AMP_PRECISION,
-            balancesScaled18,
-            daiIdx,
-            usdcIdx,
-            daiExactAmountIn,
-            poolInvariant
         );
 
         // Call the dynamic fee hook to fetch the expected swap fee percentage.
@@ -247,6 +258,16 @@ contract DirectionalHookExampleTest is BaseVaultTest {
                 SWAP_FEE_PERCENTAGE
             );
 
+        uint256 swapFeeAmount = daiExactAmountIn.mulUp(expectedSwapFeePercentage);
+        uint256 expectedAmountOut = StableMath.computeOutGivenExactIn(
+            DEFAULT_AMP_FACTOR * StableMath.AMP_PRECISION,
+            balancesScaled18,
+            daiIdx,
+            usdcIdx,
+            daiExactAmountIn - swapFeeAmount,
+            poolInvariant
+        );
+
         // Swap DAI for USDC to bring the pool closer to equilibrium.
         vm.prank(bob);
         router.swapSingleTokenExactIn(pool, dai, usdc, daiExactAmountIn, 0, MAX_UINT256, false, bytes(""));
@@ -259,7 +280,7 @@ contract DirectionalHookExampleTest is BaseVaultTest {
 
         // Check that the swap fee percentage was applied as expected. Since the pool was taken further from
         // equilibrium, it should be greater than the standard swap fee percentage.
-        assertEq(actualSwapFeeAmount, expectedAmountOut.mulUp(expectedSwapFeePercentage), "Swap fee amount is wrong");
+        assertEq(expectedAmountOut, actualAmountOut, "Amount out is wrong");
         assertGt(expectedSwapFeePercentage, SWAP_FEE_PERCENTAGE, "Expected swap fee percentage not greater than 10%");
 
         // Bob balances (Bob deposited DAI to receive USDC)
@@ -314,7 +335,7 @@ contract DirectionalHookExampleTest is BaseVaultTest {
 
     // Registration tests require a new pool, because an existing pool may already be registered.
     function _createPoolToRegister() private returns (address newPool) {
-        newPool = address(new PoolMock(IVault(address(vault)), "ERC20 Pool", "ERC20POOL"));
+        newPool = address(deployPoolMock(IVault(address(vault)), "ERC20 Pool", "ERC20POOL"));
         vm.label(newPool, "Directional Fee Pool");
     }
 

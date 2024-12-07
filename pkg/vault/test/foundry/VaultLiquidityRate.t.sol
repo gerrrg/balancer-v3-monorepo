@@ -38,19 +38,22 @@ contract VaultLiquidityWithRatesTest is BaseVaultTest {
         RateProviderMock(address(rateProviders[wstethIdx])).mockRate(mockRate);
     }
 
-    function createPool() internal override returns (address) {
+    function createPool() internal override returns (address newPool, bytes memory poolArgs) {
+        string memory name = "ERC20 Pool";
+        string memory symbol = "ERC20POOL";
+
         (daiIdx, wstethIdx) = getSortedIndexes(address(dai), address(wsteth));
 
         rateProviders = new IRateProvider[](2);
 
         // Add rate providers for wstEth and dai.
-        rateProviders[daiIdx] = new RateProviderMock();
-        rateProviders[wstethIdx] = new RateProviderMock();
+        rateProviders[daiIdx] = deployRateProviderMock();
+        rateProviders[wstethIdx] = deployRateProviderMock();
 
         // Part of the tests use the rateProvider variable from BaseVaultTest, so we set that to wstEth rate provider.
         rateProvider = RateProviderMock(address(rateProviders[wstethIdx]));
 
-        address newPool = address(new PoolMock(IVault(address(vault)), "ERC20 Pool", "ERC20POOL"));
+        newPool = address(deployPoolMock(IVault(address(vault)), name, symbol));
 
         // Add tokens in the same order as rate providers.
         IERC20[] memory tokens = new IERC20[](2);
@@ -58,13 +61,12 @@ contract VaultLiquidityWithRatesTest is BaseVaultTest {
         tokens[wstethIdx] = wsteth;
 
         factoryMock.registerTestPool(newPool, vault.buildTokenConfig(tokens, rateProviders), poolHooksContract, lp);
-
-        return newPool;
+        poolArgs = abi.encode(vault, name, symbol);
     }
 
     function testLastLiveBalanceInitialization() public {
         // Need to set the rate before initialization for this test.
-        pool = createPool();
+        (pool, ) = createPool();
         rateProvider.mockRate(mockRate);
         initPool();
 
@@ -138,7 +140,7 @@ contract VaultLiquidityWithRatesTest is BaseVaultTest {
         router.addLiquidityUnbalanced(
             pool,
             [defaultAmount, defaultAmount].toMemoryArray(),
-            defaultAmount,
+            bptAmountRoundDown,
             false,
             bytes("")
         );
@@ -146,8 +148,8 @@ contract VaultLiquidityWithRatesTest is BaseVaultTest {
         // TODO: Find a way to test rates inside the Vault.
         router.removeLiquidityProportional(
             pool,
-            defaultAmount * 2,
-            [defaultAmount, defaultAmount].toMemoryArray(),
+            bptAmountRoundDown,
+            [defaultAmountRoundDown, defaultAmountRoundDown].toMemoryArray(),
             false,
             bytes("")
         );
@@ -161,13 +163,12 @@ contract VaultLiquidityWithRatesTest is BaseVaultTest {
         router.addLiquidityUnbalanced(
             pool,
             [defaultAmount, defaultAmount].toMemoryArray(),
-            defaultAmount,
+            bptAmountRoundDown,
             false,
             bytes("")
         );
 
         PoolData memory balances = vault.loadPoolDataUpdatingBalancesAndYieldFees(pool, Rounding.ROUND_DOWN);
-        uint256 bptAmountIn = defaultAmount * 2;
 
         vm.expectCall(
             pool,
@@ -176,12 +177,19 @@ contract VaultLiquidityWithRatesTest is BaseVaultTest {
                 (
                     [balances.balancesLiveScaled18[daiIdx], balances.balancesLiveScaled18[wstethIdx]].toMemoryArray(),
                     wstethIdx, // tokenOutIndex
-                    50e16 // invariantRatio
+                    50e16 + 1 // invariantRatio
                 )
             )
         );
 
-        router.removeLiquiditySingleTokenExactIn(pool, bptAmountIn, wsteth, defaultAmount, false, bytes(""));
+        router.removeLiquiditySingleTokenExactIn(
+            pool,
+            bptAmountRoundDown,
+            wsteth,
+            defaultAmountRoundDown,
+            false,
+            bytes("")
+        );
     }
 
     function testRemoveLiquidityCustomWithRate() public {

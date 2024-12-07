@@ -2,9 +2,9 @@
 
 pragma solidity ^0.8.24;
 
+import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
-import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import { IHooks } from "@balancer-labs/v3-interfaces/contracts/vault/IHooks.sol";
 import { IVault } from "@balancer-labs/v3-interfaces/contracts/vault/IVault.sol";
@@ -137,10 +137,14 @@ contract FeeTakingHookExample is BaseHooks, VaultGuard, Ownable {
     ) public override onlyVault returns (bool success, uint256 hookAdjustedAmountCalculatedRaw) {
         hookAdjustedAmountCalculatedRaw = params.amountCalculatedRaw;
         if (hookSwapFeePercentage > 0) {
-            uint256 hookFee = params.amountCalculatedRaw.mulDown(hookSwapFeePercentage);
+            uint256 hookFee = params.amountCalculatedRaw.mulUp(hookSwapFeePercentage);
 
             if (hookFee > 0) {
                 IERC20 feeToken;
+
+                // Note that we can only alter the calculated amount in this function. This means that the fee will be
+                // charged in different tokens depending on whether the swap is exact in / out, potentially breaking
+                // the equivalence (i.e., one direction might "cost" less than the other).
 
                 if (params.kind == SwapKind.EXACT_IN) {
                     // For EXACT_IN swaps, the `amountCalculated` is the amount of `tokenOut`. The fee must be taken
@@ -149,7 +153,7 @@ contract FeeTakingHookExample is BaseHooks, VaultGuard, Ownable {
                     // The preceding swap operation has already credited the original `amountCalculated`. Since we're
                     // returning `amountCalculated - hookFee` here, it will only register debt for that reduced amount
                     // on settlement. This call to `sendTo` pulls `hookFee` tokens of `tokenOut` from the Vault to this
-                    // contract, and registers the additional debt, so that the total debts match the credits and
+                    // contract, and registers the additional debt, so that the total debits match the credits and
                     // settlement succeeds.
                     feeToken = params.tokenOut;
                     hookAdjustedAmountCalculatedRaw -= hookFee;
@@ -160,7 +164,7 @@ contract FeeTakingHookExample is BaseHooks, VaultGuard, Ownable {
                     // The preceding swap operation has already registered debt for the original `amountCalculated`.
                     // Since we're returning `amountCalculated + hookFee` here, it will supply credit for that increased
                     // amount on settlement. This call to `sendTo` pulls `hookFee` tokens of `tokenIn` from the Vault to
-                    // this contract, and registers the additional debt, so that the total debts match the credits and
+                    // this contract, and registers the additional debt, so that the total debits match the credits and
                     // settlement succeeds.
                     feeToken = params.tokenIn;
                     hookAdjustedAmountCalculatedRaw += hookFee;
@@ -199,7 +203,7 @@ contract FeeTakingHookExample is BaseHooks, VaultGuard, Ownable {
         if (addLiquidityHookFeePercentage > 0) {
             // Charge fees proportional to amounts in of each token.
             for (uint256 i = 0; i < amountsInRaw.length; i++) {
-                uint256 hookFee = amountsInRaw[i].mulDown(addLiquidityHookFeePercentage);
+                uint256 hookFee = amountsInRaw[i].mulUp(addLiquidityHookFeePercentage);
 
                 if (hookFee > 0) {
                     hookAdjustedAmountsInRaw[i] += hookFee;
@@ -239,11 +243,11 @@ contract FeeTakingHookExample is BaseHooks, VaultGuard, Ownable {
         if (removeLiquidityHookFeePercentage > 0) {
             // Charge fees proportional to amounts out of each token
             for (uint256 i = 0; i < amountsOutRaw.length; i++) {
-                uint256 hookFee = amountsOutRaw[i].mulDown(removeLiquidityHookFeePercentage);
+                uint256 hookFee = amountsOutRaw[i].mulUp(removeLiquidityHookFeePercentage);
 
                 if (hookFee > 0) {
                     hookAdjustedAmountsOutRaw[i] -= hookFee;
-                    // Sends the hook fee to the hook and registers the debt in the vault
+                    // Sends the hook fee to the hook and registers the debt in the Vault
                     _vault.sendTo(tokens[i], address(this), hookFee);
 
                     emit HookFeeCharged(address(this), tokens[i], hookFee);
@@ -259,6 +263,7 @@ contract FeeTakingHookExample is BaseHooks, VaultGuard, Ownable {
     /**
      * @notice Sets the hook swap fee percentage, charged on every swap operation.
      * @dev This function must be permissioned.
+     * @param hookFeePercentage The new hook fee percentage
      */
     function setHookSwapFeePercentage(uint64 hookFeePercentage) external onlyOwner {
         hookSwapFeePercentage = hookFeePercentage;
@@ -269,6 +274,7 @@ contract FeeTakingHookExample is BaseHooks, VaultGuard, Ownable {
     /**
      * @notice Sets the hook add liquidity fee percentage, charged on every add liquidity operation.
      * @dev This function must be permissioned.
+     * @param hookFeePercentage The new hook fee percentage
      */
     function setAddLiquidityHookFeePercentage(uint64 hookFeePercentage) external onlyOwner {
         addLiquidityHookFeePercentage = hookFeePercentage;
@@ -279,6 +285,7 @@ contract FeeTakingHookExample is BaseHooks, VaultGuard, Ownable {
     /**
      * @notice Sets the hook remove liquidity fee percentage, charged on every remove liquidity operation.
      * @dev This function must be permissioned.
+     * @param hookFeePercentage The new hook fee percentage
      */
     function setRemoveLiquidityHookFeePercentage(uint64 hookFeePercentage) external onlyOwner {
         removeLiquidityHookFeePercentage = hookFeePercentage;
@@ -286,7 +293,10 @@ contract FeeTakingHookExample is BaseHooks, VaultGuard, Ownable {
         emit HookRemoveLiquidityFeePercentageChanged(address(this), hookFeePercentage);
     }
 
-    /// @notice Withdraws the accumulated fees and sends them to the owner.
+    /**
+     * @notice Withdraws the accumulated fees and sends them to the owner.
+     * @param feeToken The token with accumulated fees
+     */
     function withdrawFees(IERC20 feeToken) external {
         uint256 feeAmount = feeToken.balanceOf(address(this));
 

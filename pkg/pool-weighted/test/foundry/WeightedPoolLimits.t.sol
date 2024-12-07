@@ -22,8 +22,9 @@ import { BasePoolMath } from "@balancer-labs/v3-vault/contracts/BasePoolMath.sol
 import { WeightedPoolMock } from "../../contracts/test/WeightedPoolMock.sol";
 import { WeightedMathMock } from "../../contracts/test/WeightedMathMock.sol";
 import { WeightedPool } from "../../contracts/WeightedPool.sol";
+import { WeightedPoolContractsDeployer } from "./utils/WeightedPoolContractsDeployer.sol";
 
-contract WeightedPoolLimitsTest is BaseVaultTest {
+contract WeightedPoolLimitsTest is BaseVaultTest, WeightedPoolContractsDeployer {
     using CastingHelpers for address[];
     using FixedPoint for uint256;
     using ArrayHelpers for *;
@@ -54,7 +55,7 @@ contract WeightedPoolLimitsTest is BaseVaultTest {
     uint256 internal preInitSnapshotId;
 
     constructor() {
-        math = new WeightedMathMock();
+        math = deployWeightedMathMock();
         amountsIn = new uint256[](2);
         newAmountsIn = new uint256[](2);
         startingBalances = new uint256[](2);
@@ -68,24 +69,30 @@ contract WeightedPoolLimitsTest is BaseVaultTest {
         BaseVaultTest.setUp();
     }
 
-    function _createPool(address[] memory tokens, string memory label) internal virtual override returns (address) {
+    function _createPool(
+        address[] memory tokens,
+        string memory label
+    ) internal virtual override returns (address newPool, bytes memory poolArgs) {
+        string memory name = "Weight Limit Pool";
+        string memory symbol = "WEIGHTY";
+        string memory poolVersion = "Version 1";
+
         LiquidityManagement memory liquidityManagement;
         PoolRoleAccounts memory roleAccounts;
 
-        weightedPool = new WeightedPoolMock(
-            WeightedPool.NewPoolParams({
-                name: "Weight Limit Pool",
-                symbol: "WEIGHTY",
-                numTokens: 2,
-                normalizedWeights: [uint256(50e16), uint256(50e16)].toMemoryArray(),
-                version: "Version 1"
-            }),
-            vault
-        );
-        vm.label(address(weightedPool), label);
+        WeightedPool.NewPoolParams memory params = WeightedPool.NewPoolParams({
+            name: name,
+            symbol: symbol,
+            numTokens: 2,
+            normalizedWeights: [uint256(50e16), uint256(50e16)].toMemoryArray(),
+            version: poolVersion
+        });
+
+        newPool = address(deployWeightedPoolMock(params, vault));
+        vm.label(newPool, label);
 
         vault.registerPool(
-            address(weightedPool),
+            newPool,
             vault.buildTokenConfig(tokens.asIERC20()),
             DEFAULT_SWAP_FEE,
             0,
@@ -95,7 +102,10 @@ contract WeightedPoolLimitsTest is BaseVaultTest {
             liquidityManagement
         );
 
-        return address(weightedPool);
+        // poolArgs is used to check pool deployment address with create2.
+        poolArgs = abi.encode(params, vault);
+
+        weightedPool = WeightedPoolMock(newPool);
     }
 
     function initPool() internal override {
@@ -135,8 +145,6 @@ contract WeightedPoolLimitsTest is BaseVaultTest {
         _updatePoolParams(daiWeight, swapFeePercentage);
 
         uint256 postInitSnapshot = vm.snapshot();
-        _testGetBptRate();
-        vm.revertTo(postInitSnapshot);
 
         _testAddLiquidity();
         vm.revertTo(postInitSnapshot);
@@ -321,36 +329,6 @@ contract WeightedPoolLimitsTest is BaseVaultTest {
 
         assertEq(balances[daiIdx], expectedBalances[daiIdx], "Pool: Wrong DAI balance");
         assertEq(balances[usdcIdx], expectedBalances[usdcIdx], "Pool: Wrong USDC balance");
-    }
-
-    function _testGetBptRate() internal {
-        uint256 totalSupply = bptAmountOut + POOL_MINIMUM_TOTAL_SUPPLY;
-        uint256[] memory weights = weightedPool.getNormalizedWeights();
-
-        uint256 weightedInvariant = WeightedMath.computeInvariantDown(weights, amountsIn);
-        uint256 expectedRate = weightedInvariant.divDown(totalSupply);
-        uint256 actualRate = IRateProvider(address(pool)).getRate();
-        assertEq(actualRate, expectedRate, "Wrong rate");
-
-        uint256[] memory unbalancedAmountsIn = [TOKEN_AMOUNT, 0].toMemoryArray();
-        vm.prank(bob);
-        uint256 addLiquidityBptAmountOut = router.addLiquidityUnbalanced(
-            address(weightedPool),
-            unbalancedAmountsIn,
-            0,
-            false,
-            bytes("")
-        );
-
-        totalSupply += addLiquidityBptAmountOut;
-        expectedBalances[0] = amountsIn[0] + TOKEN_AMOUNT;
-        expectedBalances[1] = amountsIn[1];
-
-        weightedInvariant = WeightedMath.computeInvariantDown(weights, expectedBalances);
-
-        expectedRate = weightedInvariant.divDown(totalSupply);
-        actualRate = IRateProvider(address(pool)).getRate();
-        assertEq(actualRate, expectedRate, "Wrong rate after addLiquidity");
     }
 
     function _testAddLiquidityUnbalanced(uint256 swapFeePercentage) public {

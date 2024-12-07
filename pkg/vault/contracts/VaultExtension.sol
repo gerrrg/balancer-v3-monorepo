@@ -2,12 +2,13 @@
 
 pragma solidity ^0.8.24;
 
-import { Proxy } from "@openzeppelin/contracts/proxy/Proxy.sol";
-import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import { IERC4626 } from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import { IERC4626 } from "@openzeppelin/contracts/interfaces/IERC4626.sol";
+import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { Address } from "@openzeppelin/contracts/utils/Address.sol";
+import { Proxy } from "@openzeppelin/contracts/proxy/Proxy.sol";
 
+import { IAuthorizer } from "@balancer-labs/v3-interfaces/contracts/vault/IAuthorizer.sol";
 import { IProtocolFeeController } from "@balancer-labs/v3-interfaces/contracts/vault/IProtocolFeeController.sol";
 import { IRateProvider } from "@balancer-labs/v3-interfaces/contracts/solidity-utils/helpers/IRateProvider.sol";
 import { IVaultExtension } from "@balancer-labs/v3-interfaces/contracts/vault/IVaultExtension.sol";
@@ -17,25 +18,25 @@ import { IHooks } from "@balancer-labs/v3-interfaces/contracts/vault/IHooks.sol"
 import { IVault } from "@balancer-labs/v3-interfaces/contracts/vault/IVault.sol";
 import "@balancer-labs/v3-interfaces/contracts/vault/VaultTypes.sol";
 
+import { StorageSlotExtension } from "@balancer-labs/v3-solidity-utils/contracts/openzeppelin/StorageSlotExtension.sol";
+import { EVMCallModeHelpers } from "@balancer-labs/v3-solidity-utils/contracts/helpers/EVMCallModeHelpers.sol";
+import { PackedTokenBalance } from "@balancer-labs/v3-solidity-utils/contracts/helpers/PackedTokenBalance.sol";
+import { ScalingHelpers } from "@balancer-labs/v3-solidity-utils/contracts/helpers/ScalingHelpers.sol";
 import { CastingHelpers } from "@balancer-labs/v3-solidity-utils/contracts/helpers/CastingHelpers.sol";
 import { InputHelpers } from "@balancer-labs/v3-solidity-utils/contracts/helpers/InputHelpers.sol";
 import { RevertCodec } from "@balancer-labs/v3-solidity-utils/contracts/helpers/RevertCodec.sol";
-import { ScalingHelpers } from "@balancer-labs/v3-solidity-utils/contracts/helpers/ScalingHelpers.sol";
-import { EVMCallModeHelpers } from "@balancer-labs/v3-solidity-utils/contracts/helpers/EVMCallModeHelpers.sol";
+import { FixedPoint } from "@balancer-labs/v3-solidity-utils/contracts/math/FixedPoint.sol";
 import {
     TransientStorageHelpers
 } from "@balancer-labs/v3-solidity-utils/contracts/helpers/TransientStorageHelpers.sol";
-import { StorageSlotExtension } from "@balancer-labs/v3-solidity-utils/contracts/openzeppelin/StorageSlotExtension.sol";
-import { FixedPoint } from "@balancer-labs/v3-solidity-utils/contracts/math/FixedPoint.sol";
-import { PackedTokenBalance } from "@balancer-labs/v3-solidity-utils/contracts/helpers/PackedTokenBalance.sol";
 
 import { VaultStateBits, VaultStateLib } from "./lib/VaultStateLib.sol";
 import { PoolConfigLib, PoolConfigBits } from "./lib/PoolConfigLib.sol";
-import { HooksConfigLib } from "./lib/HooksConfigLib.sol";
 import { VaultExtensionsLib } from "./lib/VaultExtensionsLib.sol";
-import { VaultCommon } from "./VaultCommon.sol";
+import { HooksConfigLib } from "./lib/HooksConfigLib.sol";
 import { PoolDataLib } from "./lib/PoolDataLib.sol";
 import { BasePoolMath } from "./BasePoolMath.sol";
+import { VaultCommon } from "./VaultCommon.sol";
 
 /**
  * @notice Bytecode extension for the Vault containing permissionless functions outside the critical path.
@@ -65,7 +66,7 @@ contract VaultExtension is IVaultExtension, VaultCommon, Proxy {
     IVault private immutable _vault;
     IVaultAdmin private immutable _vaultAdmin;
 
-    /// @dev Functions with this modifier can only be delegate-called by the vault.
+    /// @dev Functions with this modifier can only be delegate-called by the Vault.
     modifier onlyVaultDelegateCall() {
         _ensureVaultDelegateCall();
         _;
@@ -126,6 +127,11 @@ contract VaultExtension is IVaultExtension, VaultCommon, Proxy {
         return _reservesOf[token];
     }
 
+    /// @inheritdoc IVaultExtension
+    function getAddLiquidityCalledFlag(address pool) external view onlyVaultDelegateCall returns (bool) {
+        return _addLiquidityCalled().tGet(_sessionIdSlot().tload(), pool);
+    }
+
     /*******************************************************************************
                                     Pool Registration
     *******************************************************************************/
@@ -173,7 +179,7 @@ contract VaultExtension is IVaultExtension, VaultCommon, Proxy {
      * Emits a `PoolRegistered` event upon successful registration.
      */
     function _registerPool(address pool, PoolRegistrationParams memory params) internal {
-        // Ensure the pool isn't already registered
+        // Ensure the pool isn't already registered.
         if (_isPoolRegistered(pool)) {
             revert PoolAlreadyRegistered(pool);
         }
@@ -193,7 +199,7 @@ contract VaultExtension is IVaultExtension, VaultCommon, Proxy {
             TokenConfig memory tokenData = params.tokenConfig[i];
             IERC20 token = tokenData.token;
 
-            // Ensure that the token address is valid
+            // Ensure that the token address is valid.
             if (address(token) == address(0) || address(token) == pool) {
                 revert InvalidToken();
             }
@@ -227,7 +233,16 @@ contract VaultExtension is IVaultExtension, VaultCommon, Proxy {
                 revert InvalidTokenType();
             }
 
-            tokenDecimalDiffs[i] = uint8(18) - IERC20Metadata(address(token)).decimals();
+            // Store the token decimal conversion factor as a delta from the maximum supported value.
+            uint8 tokenDecimals = IERC20Metadata(address(token)).decimals();
+
+            if (tokenDecimals > _MAX_TOKEN_DECIMALS) {
+                revert InvalidTokenDecimals();
+            } else {
+                unchecked {
+                    tokenDecimalDiffs[i] = _MAX_TOKEN_DECIMALS - tokenDecimals;
+                }
+            }
 
             // Store token and seed the next iteration.
             _poolTokens[pool].push(token);
@@ -272,12 +287,12 @@ contract VaultExtension is IVaultExtension, VaultCommon, Proxy {
                     revert HookRegistrationFailed(params.poolHooksContract, pool, msg.sender);
                 }
 
-                // Gets the default HooksConfig from the hook contract and saves in the vault state.
+                // Gets the default HooksConfig from the hook contract and saves it in the Vault state.
                 // Storing into hooksConfig first avoids stack-too-deep.
                 HookFlags memory hookFlags = IHooks(params.poolHooksContract).getHookFlags();
 
                 // When enableHookAdjustedAmounts == true, hooks are able to modify the result of a liquidity or swap
-                // operation by implementing an after hook. For simplicity, the vault only supports modifying the
+                // operation by implementing an after hook. For simplicity, the Vault only supports modifying the
                 // calculated part of the operation. As such, when a hook supports adjusted amounts, it cannot support
                 // unbalanced liquidity operations, as this would introduce instances where the amount calculated is the
                 // input amount (EXACT_OUT).
@@ -416,8 +431,6 @@ contract VaultExtension is IVaultExtension, VaultCommon, Proxy {
             poolBalances[i] = PackedTokenBalance.toPackedBalance(exactAmountsIn[i], exactAmountsInScaled18[i]);
         }
 
-        emit PoolBalanceChanged(pool, to, exactAmountsIn.unsafeCastToInt256(true));
-
         poolData.poolConfigBits = poolData.poolConfigBits.setPoolInitialized(true);
 
         // Store config and mark the pool as initialized.
@@ -440,6 +453,15 @@ contract VaultExtension is IVaultExtension, VaultCommon, Proxy {
         if (bptAmountOut < minBptAmountOut) {
             revert BptAmountOutBelowMin(bptAmountOut, minBptAmountOut);
         }
+
+        emit LiquidityAdded(
+            pool,
+            to,
+            AddLiquidityKind.UNBALANCED,
+            _totalSupply(pool),
+            exactAmountsIn,
+            new uint256[](poolData.tokens.length)
+        );
 
         // Emit an event to log the pool initialization.
         emit PoolInitialized(pool);
@@ -550,7 +572,7 @@ contract VaultExtension is IVaultExtension, VaultCommon, Proxy {
                 tokenDecimalDiffs: config.getTokenDecimalDiffs(),
                 pauseWindowEndTime: config.getPauseWindowEndTime(),
                 liquidityManagement: LiquidityManagement({
-                    // NOTE: supportUnbalancedLiquidity is inverted because false means it is supported.
+                    // NOTE: In contrast to the other flags, supportsUnbalancedLiquidity is enabled by default.
                     disableUnbalancedLiquidity: !config.supportsUnbalancedLiquidity(),
                     enableAddLiquidityCustom: config.supportsAddLiquidityCustom(),
                     enableRemoveLiquidityCustom: config.supportsRemoveLiquidityCustom(),
@@ -605,24 +627,6 @@ contract VaultExtension is IVaultExtension, VaultCommon, Proxy {
         return true;
     }
 
-    /// @inheritdoc IVaultExtension
-    function transfer(address owner, address to, uint256 amount) external onlyVaultDelegateCall returns (bool) {
-        _transfer(msg.sender, owner, to, amount);
-        return true;
-    }
-
-    /// @inheritdoc IVaultExtension
-    function transferFrom(
-        address spender,
-        address from,
-        address to,
-        uint256 amount
-    ) external onlyVaultDelegateCall returns (bool) {
-        _spendAllowance(msg.sender, from, spender, amount);
-        _transfer(msg.sender, from, to, amount);
-        return true;
-    }
-
     /*******************************************************************************
                                      Pool Pausing
     *******************************************************************************/
@@ -644,6 +648,20 @@ contract VaultExtension is IVaultExtension, VaultCommon, Proxy {
             pauseWindowEndTime + _vaultBufferPeriodDuration,
             _poolRoleAccounts[pool].pauseManager
         );
+    }
+
+    /*******************************************************************************
+                                   ERC4626 Buffers
+    *******************************************************************************/
+
+    /// @inheritdoc IVaultExtension
+    function isERC4626BufferInitialized(IERC4626 wrappedToken) external view onlyVaultDelegateCall returns (bool) {
+        return _bufferAssets[wrappedToken] != address(0);
+    }
+
+    /// @inheritdoc IVaultExtension
+    function getERC4626BufferAsset(IERC4626 wrappedToken) external view onlyVaultDelegateCall returns (address asset) {
+        return _bufferAssets[wrappedToken];
     }
 
     /*******************************************************************************
@@ -715,11 +733,22 @@ contract VaultExtension is IVaultExtension, VaultCommon, Proxy {
         return _isPoolInRecoveryMode(pool);
     }
 
+    // Needed to avoid stack-too-deep.
+    struct RecoveryLocals {
+        IERC20[] tokens;
+        uint256 swapFeePercentage;
+        uint256 numTokens;
+        uint256[] swapFeeAmountsRaw;
+        uint256[] balancesRaw;
+        bool chargeRoundtripFee;
+    }
+
     /// @inheritdoc IVaultExtension
     function removeLiquidityRecovery(
         address pool,
         address from,
-        uint256 exactBptAmountIn
+        uint256 exactBptAmountIn,
+        uint256[] memory minAmountsOut
     )
         external
         onlyVaultDelegateCall
@@ -731,27 +760,53 @@ contract VaultExtension is IVaultExtension, VaultCommon, Proxy {
     {
         // Retrieve the mapping of tokens and their balances for the specified pool.
         mapping(uint256 tokenIndex => bytes32 packedTokenBalance) storage poolTokenBalances = _poolTokenBalances[pool];
+        RecoveryLocals memory locals;
 
         // Initialize arrays to store tokens and balances based on the number of tokens in the pool.
-        IERC20[] memory tokens = _poolTokens[pool];
-        uint256 numTokens = tokens.length;
+        locals.tokens = _poolTokens[pool];
+        locals.numTokens = locals.tokens.length;
 
-        uint256[] memory balancesRaw = new uint256[](numTokens);
+        locals.balancesRaw = new uint256[](locals.numTokens);
         bytes32 packedBalances;
 
-        for (uint256 i = 0; i < numTokens; ++i) {
-            balancesRaw[i] = poolTokenBalances[i].getBalanceRaw();
+        for (uint256 i = 0; i < locals.numTokens; ++i) {
+            locals.balancesRaw[i] = poolTokenBalances[i].getBalanceRaw();
         }
 
-        amountsOutRaw = BasePoolMath.computeProportionalAmountsOut(balancesRaw, _totalSupply(pool), exactBptAmountIn);
+        amountsOutRaw = BasePoolMath.computeProportionalAmountsOut(
+            locals.balancesRaw,
+            _totalSupply(pool),
+            exactBptAmountIn
+        );
 
-        for (uint256 i = 0; i < numTokens; ++i) {
+        // Normally we expect recovery mode withdrawals to be stand-alone operations. If there is a previous add
+        // operation in this transaction, this might be an attack, so we apply the same guardrail used for regular
+        // proportional withdrawals. To keep things simple, all we do is reduce the `amountsOut`, leaving the "fee"
+        // tokens in the pool.
+        locals.swapFeeAmountsRaw = new uint256[](locals.numTokens);
+        locals.chargeRoundtripFee = _addLiquidityCalled().tGet(_sessionIdSlot().tload(), pool);
+
+        // Don't make the call to retrieve the fee unless we have to.
+        if (locals.chargeRoundtripFee) {
+            locals.swapFeePercentage = _poolConfigBits[pool].getStaticSwapFeePercentage();
+        }
+
+        for (uint256 i = 0; i < locals.numTokens; ++i) {
+            if (locals.chargeRoundtripFee) {
+                locals.swapFeeAmountsRaw[i] = amountsOutRaw[i].mulUp(locals.swapFeePercentage);
+                amountsOutRaw[i] -= locals.swapFeeAmountsRaw[i];
+            }
+
+            if (amountsOutRaw[i] < minAmountsOut[i]) {
+                revert AmountOutBelowMin(locals.tokens[i], amountsOutRaw[i], minAmountsOut[i]);
+            }
+
             // Credit token[i] for amountOut.
-            _supplyCredit(tokens[i], amountsOutRaw[i]);
+            _supplyCredit(locals.tokens[i], amountsOutRaw[i]);
 
             // Compute the new Pool balances. A Pool's token balance always decreases after an exit
             // (potentially by 0).
-            balancesRaw[i] -= amountsOutRaw[i];
+            locals.balancesRaw[i] -= amountsOutRaw[i];
         }
 
         // Store the new pool balances - raw only, since we don't have rates in Recovery Mode.
@@ -759,9 +814,9 @@ contract VaultExtension is IVaultExtension, VaultCommon, Proxy {
         // out of Recovery Mode.
         mapping(uint256 tokenIndex => bytes32 packedTokenBalance) storage poolBalances = _poolTokenBalances[pool];
 
-        for (uint256 i = 0; i < numTokens; ++i) {
+        for (uint256 i = 0; i < locals.numTokens; ++i) {
             packedBalances = poolBalances[i];
-            poolBalances[i] = packedBalances.setBalanceRaw(balancesRaw[i]);
+            poolBalances[i] = packedBalances.setBalanceRaw(locals.balancesRaw[i]);
         }
 
         _spendAllowance(pool, from, msg.sender, exactBptAmountIn);
@@ -772,14 +827,17 @@ contract VaultExtension is IVaultExtension, VaultCommon, Proxy {
         }
         // When removing liquidity, we must burn tokens concurrently with updating pool balances,
         // as the pool's math relies on totalSupply.
+        //
         // Burning will be reverted if it results in a total supply less than the _MINIMUM_TOTAL_SUPPLY.
         _burn(pool, from, exactBptAmountIn);
 
-        emit PoolBalanceChanged(
+        emit LiquidityRemoved(
             pool,
             from,
-            // We can unsafely cast to int256 because balances are stored as uint128 (see PackedTokenBalance).
-            amountsOutRaw.unsafeCastToInt256(false)
+            RemoveLiquidityKind.PROPORTIONAL,
+            _totalSupply(pool),
+            amountsOutRaw,
+            locals.swapFeeAmountsRaw
         );
     }
 
@@ -805,10 +863,6 @@ contract VaultExtension is IVaultExtension, VaultCommon, Proxy {
 
         // Unlock so that `onlyWhenUnlocked` does not revert.
         _isUnlocked().tstore(true);
-    }
-
-    function _isQueryContext() internal view returns (bool) {
-        return EVMCallModeHelpers.isStaticCall() && _vaultStateBits.isQueryDisabled() == false;
     }
 
     /// @inheritdoc IVaultExtension
@@ -844,6 +898,40 @@ contract VaultExtension is IVaultExtension, VaultCommon, Proxy {
         return _vaultStateBits.isQueryDisabled();
     }
 
+    /// @inheritdoc IVaultExtension
+    function isQueryDisabledPermanently() external view onlyVaultDelegateCall returns (bool) {
+        return _queriesDisabledPermanently;
+    }
+
+    /*******************************************************************************
+                                    Authentication
+    *******************************************************************************/
+
+    /// @inheritdoc IVaultExtension
+    function getAuthorizer() external view onlyVaultDelegateCall returns (IAuthorizer) {
+        return _authorizer;
+    }
+
+    /*******************************************************************************
+                                     Miscellaneous
+    *******************************************************************************/
+
+    /**
+     * @inheritdoc Proxy
+     * @dev Returns the VaultAdmin contract, to which fallback requests are forwarded.
+     */
+    function _implementation() internal view override returns (address) {
+        return address(_vaultAdmin);
+    }
+
+    /// @inheritdoc IVaultExtension
+    function emitAuxiliaryEvent(
+        bytes32 eventKey,
+        bytes calldata eventData
+    ) external onlyVaultDelegateCall withRegisteredPool(msg.sender) {
+        emit VaultAuxiliary(msg.sender, eventKey, eventData);
+    }
+
     /*******************************************************************************
                                      Default handlers
     *******************************************************************************/
@@ -857,7 +945,7 @@ contract VaultExtension is IVaultExtension, VaultCommon, Proxy {
     /**
      * @inheritdoc Proxy
      * @dev Override proxy implementation of `fallback` to disallow incoming ETH transfers.
-     * This function actually returns whatever the VaultExtension does when handling the request.
+     * This function actually returns whatever the VaultAdmin does when handling the request.
      */
     fallback() external payable override {
         if (msg.value > 0) {
@@ -865,17 +953,5 @@ contract VaultExtension is IVaultExtension, VaultCommon, Proxy {
         }
 
         _fallback();
-    }
-
-    /*******************************************************************************
-                                     Miscellaneous
-    *******************************************************************************/
-
-    /**
-     * @inheritdoc Proxy
-     * @dev Returns the VaultAdmin contract, to which fallback requests are forwarded.
-     */
-    function _implementation() internal view override returns (address) {
-        return address(_vaultAdmin);
     }
 }

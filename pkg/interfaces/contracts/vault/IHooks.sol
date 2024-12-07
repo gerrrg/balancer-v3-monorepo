@@ -44,7 +44,7 @@ interface IHooks {
         address pool,
         TokenConfig[] memory tokenConfig,
         LiquidityManagement calldata liquidityManagement
-    ) external returns (bool);
+    ) external returns (bool success);
 
     /**
      * @notice Return the set of hooks implemented by the contract.
@@ -69,7 +69,7 @@ interface IHooks {
      * @param userData Optional, arbitrary data sent with the encoded request
      * @return success True if the pool wishes to proceed with initialization
      */
-    function onBeforeInitialize(uint256[] memory exactAmountsIn, bytes memory userData) external returns (bool);
+    function onBeforeInitialize(uint256[] memory exactAmountsIn, bytes memory userData) external returns (bool success);
 
     /**
      * @notice Hook to be executed after pool initialization.
@@ -85,7 +85,7 @@ interface IHooks {
         uint256[] memory exactAmountsIn,
         uint256 bptAmountOut,
         bytes memory userData
-    ) external returns (bool);
+    ) external returns (bool success);
 
     /***************************************************************************
                                    Add Liquidity
@@ -97,8 +97,8 @@ interface IHooks {
      * the `onlyVault` modifier to guarantee this is only called by the Vault.
      *
      * @param router The address (usually a router contract) that initiated an add liquidity operation on the Vault
-     * @param pool Pool address, used to fetch pool information from the vault (pool config, tokens, etc.)
-     * @param kind The type of add liquidity operation (e.g., proportional, custom)
+     * @param pool Pool address, used to fetch pool information from the Vault (pool config, tokens, etc.)
+     * @param kind The add liquidity operation type (e.g., proportional, custom)
      * @param maxAmountsInScaled18 Maximum amounts of input tokens
      * @param minBptAmountOut Minimum amount of output pool tokens
      * @param balancesScaled18 Current pool balances, sorted in token registration order
@@ -122,8 +122,8 @@ interface IHooks {
      * `onlyVault` modifier to guarantee this is only called by the Vault.
      *
      * @param router The address (usually a router contract) that initiated an add liquidity operation on the Vault
-     * @param pool Pool address, used to fetch pool information from the vault (pool config, tokens, etc.)
-     * @param kind The type of add liquidity operation (e.g., proportional, custom)
+     * @param pool Pool address, used to fetch pool information from the Vault (pool config, tokens, etc.)
+     * @param kind The add liquidity operation type (e.g., proportional, custom)
      * @param amountsInScaled18 Actual amounts of tokens added, sorted in token registration order
      * @param amountsInRaw Actual amounts of tokens added, sorted in token registration order
      * @param bptAmountOut Amount of pool tokens minted
@@ -153,7 +153,7 @@ interface IHooks {
      * the `onlyVault` modifier to guarantee this is only called by the Vault.
      *
      * @param router The address (usually a router contract) that initiated a remove liquidity operation on the Vault
-     * @param pool Pool address, used to fetch pool information from the vault (pool config, tokens, etc.)
+     * @param pool Pool address, used to fetch pool information from the Vault (pool config, tokens, etc.)
      * @param kind The type of remove liquidity operation (e.g., proportional, custom)
      * @param maxBptAmountIn Maximum amount of input pool tokens
      * @param minAmountsOutScaled18 Minimum output amounts, sorted in token registration order
@@ -178,7 +178,7 @@ interface IHooks {
      * `onlyVault` modifier to guarantee this is only called by the Vault.
      *
      * @param router The address (usually a router contract) that initiated a remove liquidity operation on the Vault
-     * @param pool Pool address, used to fetch pool information from the vault (pool config, tokens, etc.)
+     * @param pool Pool address, used to fetch pool information from the Vault (pool config, tokens, etc.)
      * @param kind The type of remove liquidity operation (e.g., proportional, custom)
      * @param bptAmountIn Amount of pool tokens to burn
      * @param amountsOutScaled18 Scaled amount of tokens to receive, sorted in token registration order
@@ -209,7 +209,7 @@ interface IHooks {
      * `onlyVault` modifier to guarantee this is only called by the Vault.
      *
      * @param params Swap parameters (see PoolSwapParams for struct definition)
-     * @param pool Pool address, used to get pool information from the vault (poolData, token config, etc.)
+     * @param pool Pool address, used to get pool information from the Vault (poolData, token config, etc.)
      * @return success True if the pool wishes to proceed with settlement
      */
     function onBeforeSwap(PoolSwapParams calldata params, address pool) external returns (bool success);
@@ -234,7 +234,7 @@ interface IHooks {
      * the `onlyVault` modifier to guarantee this is only called by the Vault.
      *
      * @param params Swap parameters (see PoolSwapParams for struct definition)
-     * @param pool Pool address, used to get pool information from the vault (poolData, token config, etc.)
+     * @param pool Pool address, used to get pool information from the Vault (poolData, token config, etc.)
      * @param staticSwapFeePercentage 18-decimal FP value of the static swap fee percentage, for reference
      * @return success True if the pool wishes to proceed with settlement
      * @return dynamicSwapFeePercentage Value of the swap fee percentage, as an 18-decimal FP value

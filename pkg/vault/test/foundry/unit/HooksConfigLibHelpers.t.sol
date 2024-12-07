@@ -4,17 +4,20 @@ pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
 
+import { IVaultErrors } from "@balancer-labs/v3-interfaces/contracts/vault/IVaultErrors.sol";
 import { IBasePool } from "@balancer-labs/v3-interfaces/contracts/vault/IBasePool.sol";
 import { IHooks } from "@balancer-labs/v3-interfaces/contracts/vault/IHooks.sol";
-import { IVaultErrors } from "@balancer-labs/v3-interfaces/contracts/vault/IVaultErrors.sol";
 import "@balancer-labs/v3-interfaces/contracts/vault/VaultTypes.sol";
 
-import { PoolConfigConst } from "@balancer-labs/v3-vault/contracts/lib/PoolConfigConst.sol";
-import { HooksConfigLib } from "@balancer-labs/v3-vault/contracts/lib/HooksConfigLib.sol";
-import { WordCodec } from "@balancer-labs/v3-solidity-utils/contracts/helpers/WordCodec.sol";
 import { HooksConfigLibMock } from "@balancer-labs/v3-vault/contracts/test/HooksConfigLibMock.sol";
+import { WordCodec } from "@balancer-labs/v3-solidity-utils/contracts/helpers/WordCodec.sol";
+import { PoolConfigConst } from "@balancer-labs/v3-vault/contracts/lib/PoolConfigConst.sol";
+import { FixedPoint } from "@balancer-labs/v3-solidity-utils/contracts/math/FixedPoint.sol";
+import { HooksConfigLib } from "@balancer-labs/v3-vault/contracts/lib/HooksConfigLib.sol";
 
-contract HooksConfigLibHelpersTest is Test {
+import { VaultContractsDeployer } from "../utils/VaultContractsDeployer.sol";
+
+contract HooksConfigLibHelpersTest is VaultContractsDeployer {
     using WordCodec for bytes32;
     using HooksConfigLib for PoolConfigBits;
 
@@ -24,15 +27,15 @@ contract HooksConfigLibHelpersTest is Test {
     HooksConfigLibMock hooksConfigLibMock;
 
     function setUp() public {
-        hooksConfigLibMock = new HooksConfigLibMock();
+        hooksConfigLibMock = deployHooksConfigLibMock();
     }
 
     // callComputeDynamicSwapFeeHook
     function testCallComputeDynamicSwapFee() public {
         uint256 swapFeePercentage = MAX_FEE_PERCENTAGE;
-
         PoolSwapParams memory swapParams;
-        uint256 staticSwapFeePercentage = swapFeePercentage - 1;
+
+        uint256 staticSwapFeePercentage = swapFeePercentage;
         vm.mockCall(
             hooksContract,
             abi.encodeCall(IHooks.onComputeDynamicSwapFeePercentage, (swapParams, pool, staticSwapFeePercentage)),
@@ -47,6 +50,19 @@ contract HooksConfigLibHelpersTest is Test {
         );
 
         assertEq(value, swapFeePercentage, "swap fee percentage mismatch");
+    }
+
+    function testCallComputeDynamicSwapFeeAboveMax() public {
+        PoolSwapParams memory swapParams;
+
+        vm.mockCall(
+            hooksContract,
+            abi.encodeCall(IHooks.onComputeDynamicSwapFeePercentage, (swapParams, pool, MAX_FEE_PERCENTAGE)),
+            abi.encode(true, MAX_FEE_PERCENTAGE + 1)
+        );
+
+        vm.expectRevert(abi.encodeWithSelector(IVaultErrors.PercentageAboveMax.selector));
+        hooksConfigLibMock.callComputeDynamicSwapFeeHook(swapParams, pool, MAX_FEE_PERCENTAGE, IHooks(hooksContract));
     }
 
     function testCallComputeDynamicSwapFeeRevertIfCallIsNotSuccess() public {
@@ -799,7 +815,7 @@ contract HooksConfigLibHelpersTest is Test {
         );
     }
 
-    // callAfterRemoveLiquidityHook tests
+    // callAfterRemoveLiquidityHook tests.
     function testCallAfterRemoveLiquidity() public {
         (
             uint256[] memory amountsOutScaled18,
@@ -1029,7 +1045,7 @@ contract HooksConfigLibHelpersTest is Test {
             );
     }
 
-    // callBeforeInitializeHook tests
+    // callBeforeInitializeHook tests.
     function testCallBeforeInitialize() public {
         uint256[] memory exactAmountsInScaled18 = new uint256[](2);
         bytes memory userData = new bytes(0);
@@ -1057,7 +1073,7 @@ contract HooksConfigLibHelpersTest is Test {
         hooksConfigLibMock.callBeforeInitializeHook(exactAmountsInScaled18, userData, IHooks(hooksContract));
     }
 
-    // callAfterInitializeHook tests
+    // callAfterInitializeHook tests.
     function testCallAfterInitialize() public {
         uint256[] memory exactAmountsInScaled18 = new uint256[](2);
         uint256 bptAmountOut = 1e18;

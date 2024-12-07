@@ -11,13 +11,9 @@ import { IWETH } from "@balancer-labs/v3-interfaces/contracts/solidity-utils/mis
 import { IVault } from "@balancer-labs/v3-interfaces/contracts/vault/IVault.sol";
 import "@balancer-labs/v3-interfaces/contracts/vault/VaultTypes.sol";
 
-import {
-    ReentrancyGuardTransient
-} from "@balancer-labs/v3-solidity-utils/contracts/openzeppelin/ReentrancyGuardTransient.sol";
-
 import { RouterCommon } from "@balancer-labs/v3-vault/contracts/RouterCommon.sol";
 
-abstract contract MinimalRouter is RouterCommon, ReentrancyGuardTransient {
+abstract contract MinimalRouter is RouterCommon {
     using Address for address payable;
     using SafeCast for *;
 
@@ -67,7 +63,12 @@ abstract contract MinimalRouter is RouterCommon, ReentrancyGuardTransient {
         bytes userData;
     }
 
-    constructor(IVault vault, IWETH weth, IPermit2 permit2) RouterCommon(vault, weth, permit2) {
+    constructor(
+        IVault vault,
+        IWETH weth,
+        IPermit2 permit2,
+        string memory routerVersion
+    ) RouterCommon(vault, weth, permit2, routerVersion) {
         // solhint-disable-previous-line no-empty-blocks
     }
 
@@ -83,11 +84,11 @@ abstract contract MinimalRouter is RouterCommon, ReentrancyGuardTransient {
         uint256 exactBptAmountOut,
         bool wethIsEth,
         bytes memory userData
-    ) internal saveSender returns (uint256[] memory amountsIn) {
+    ) internal returns (uint256[] memory amountsIn) {
         (amountsIn, , ) = abi.decode(
             _vault.unlock(
-                abi.encodeWithSelector(
-                    MinimalRouter.addLiquidityHook.selector,
+                abi.encodeCall(
+                    MinimalRouter.addLiquidityHook,
                     ExtendedAddLiquidityHookParams({
                         sender: sender,
                         receiver: receiver,
@@ -131,12 +132,16 @@ abstract contract MinimalRouter is RouterCommon, ReentrancyGuardTransient {
             })
         );
 
-        // maxAmountsIn length is checked against tokens length at the vault.
+        // maxAmountsIn length is checked against tokens length at the Vault.
         IERC20[] memory tokens = _vault.getPoolTokens(params.pool);
 
         for (uint256 i = 0; i < tokens.length; ++i) {
             IERC20 token = tokens[i];
             uint256 amountIn = amountsIn[i];
+
+            if (amountIn == 0) {
+                continue;
+            }
 
             // There can be only one WETH token in the pool.
             if (params.wethIsEth && address(token) == address(_weth)) {
@@ -171,11 +176,11 @@ abstract contract MinimalRouter is RouterCommon, ReentrancyGuardTransient {
         uint256[] memory minAmountsOut,
         bool wethIsEth,
         bytes memory userData
-    ) internal saveSender returns (uint256[] memory amountsOut) {
+    ) internal returns (uint256[] memory amountsOut) {
         (, amountsOut, ) = abi.decode(
             _vault.unlock(
-                abi.encodeWithSelector(
-                    MinimalRouter.removeLiquidityHook.selector,
+                abi.encodeCall(
+                    MinimalRouter.removeLiquidityHook,
                     ExtendedRemoveLiquidityHookParams({
                         sender: sender,
                         receiver: receiver,
@@ -219,12 +224,16 @@ abstract contract MinimalRouter is RouterCommon, ReentrancyGuardTransient {
             })
         );
 
-        // minAmountsOut length is checked against tokens length at the vault.
+        // minAmountsOut length is checked against tokens length at the Vault.
         IERC20[] memory tokens = _vault.getPoolTokens(params.pool);
 
-        uint256 ethAmountOut = 0;
         for (uint256 i = 0; i < tokens.length; ++i) {
             uint256 amountOut = amountsOut[i];
+
+            if (amountOut == 0) {
+                continue;
+            }
+
             IERC20 token = tokens[i];
 
             // There can be only one WETH token in the pool.
@@ -232,16 +241,12 @@ abstract contract MinimalRouter is RouterCommon, ReentrancyGuardTransient {
                 // Send WETH here and unwrap to native ETH.
                 _vault.sendTo(_weth, address(this), amountOut);
                 _weth.withdraw(amountOut);
-                ethAmountOut = amountOut;
+                // Send ETH to receiver.
+                payable(params.receiver).sendValue(amountOut);
             } else {
                 // Transfer the token to the receiver (amountOut).
                 _vault.sendTo(token, params.receiver, amountOut);
             }
-        }
-
-        if (ethAmountOut > 0) {
-            // Send ETH to receiver.
-            payable(params.receiver).sendValue(ethAmountOut);
         }
     }
 }

@@ -100,14 +100,14 @@ contract LiquidityApproximationTest is BaseVaultTest {
         assertEq(dai.balanceOf(alice), dai.balanceOf(bob), "Bob and Alice DAI balances are not equal");
     }
 
-    function createPool() internal virtual override returns (address) {
+    function createPool() internal virtual override returns (address, bytes memory) {
         address[] memory tokens = [address(dai), address(usdc)].toMemoryArray();
 
-        liquidityPool = _createPool(tokens, "liquidityPool");
-        swapPool = _createPool(tokens, "swapPool");
+        (liquidityPool, ) = _createPool(tokens, "liquidityPool");
+        (swapPool, ) = _createPool(tokens, "swapPool");
 
-        // NOTE: stores address in `pool` (unused in this test).
-        return address(0);
+        // NOTE: return is empty, because this test does not use the `pool` variable.
+        return (address(0), bytes(""));
     }
 
     function initPool() internal override {
@@ -117,7 +117,8 @@ contract LiquidityApproximationTest is BaseVaultTest {
         vm.stopPrank();
     }
 
-    /// Add
+    // Add
+
     function testAddLiquidityUnbalanced__Fuzz(uint256 daiAmountIn, uint256 swapFeePercentage) public {
         daiAmountIn = bound(daiAmountIn, minAmount, maxAmount);
         swapFeePercentage = bound(swapFeePercentage, minSwapFeePercentage, maxSwapFeePercentage);
@@ -178,7 +179,7 @@ contract LiquidityApproximationTest is BaseVaultTest {
         assertLiquidityOperationNoSwapFee();
     }
 
-    /// Remove
+    // Remove
 
     function testRemoveLiquiditySingleTokenExactOut__Fuzz(
         uint256 exactAmountOut,
@@ -211,7 +212,7 @@ contract LiquidityApproximationTest is BaseVaultTest {
         assertLiquidityOperationNoSwapFee();
     }
 
-    /// Utils
+    // Utils
 
     function assertLiquidityOperationNoSwapFee() internal {
         vault.manuallySetSwapFee(liquidityPool, 0);
@@ -302,7 +303,7 @@ contract LiquidityApproximationTest is BaseVaultTest {
             uint256 discountPercentage = 1e18 - bobToAliceRatio;
             assertLt(discountPercentage, swapFeePercentage, "Discount percentage is larger than swap fee percentage");
         } else {
-            // OK case: Bob got more than Alice
+            // OK case: Bob got more than Alice.
             assertLe(
                 bobToAliceRatio,
                 1e18 + (addLiquidity ? 0 : liquidityTaxPercentage) + excessRoundingDelta,

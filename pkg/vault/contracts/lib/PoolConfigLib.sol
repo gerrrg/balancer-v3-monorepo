@@ -6,7 +6,6 @@ import { IVaultErrors } from "@balancer-labs/v3-interfaces/contracts/vault/IVaul
 import "@balancer-labs/v3-interfaces/contracts/vault/VaultTypes.sol";
 
 import { WordCodec } from "@balancer-labs/v3-solidity-utils/contracts/helpers/WordCodec.sol";
-import { FixedPoint } from "@balancer-labs/v3-solidity-utils/contracts/math/FixedPoint.sol";
 
 import { PoolConfigConst } from "./PoolConfigConst.sol";
 
@@ -99,7 +98,7 @@ library PoolConfigLib {
         return PoolConfigBits.unwrap(config).decodeBool(PoolConfigConst.ADD_LIQUIDITY_CUSTOM_OFFSET);
     }
 
-    function requireAddCustomLiquidityEnabled(PoolConfigBits config) internal pure {
+    function requireAddLiquidityCustomEnabled(PoolConfigBits config) internal pure {
         if (config.supportsAddLiquidityCustom() == false) {
             revert IVaultErrors.DoesNotSupportAddLiquidityCustom();
         }
@@ -122,7 +121,7 @@ library PoolConfigLib {
         return PoolConfigBits.unwrap(config).decodeBool(PoolConfigConst.REMOVE_LIQUIDITY_CUSTOM_OFFSET);
     }
 
-    function requireRemoveCustomLiquidityEnabled(PoolConfigBits config) internal pure {
+    function requireRemoveLiquidityCustomEnabled(PoolConfigBits config) internal pure {
         if (config.supportsRemoveLiquidityCustom() == false) {
             revert IVaultErrors.DoesNotSupportRemoveLiquidityCustom();
         }
@@ -166,6 +165,8 @@ library PoolConfigLib {
     }
 
     function setStaticSwapFeePercentage(PoolConfigBits config, uint256 value) internal pure returns (PoolConfigBits) {
+        // A 100% fee is not supported. In the ExactOut case, the Vault divides by the complement of the swap fee.
+        // The max fee percentage is slightly below 100%.
         if (value > MAX_FEE_PERCENTAGE) {
             revert IVaultErrors.PercentageAboveMax();
         }
@@ -251,8 +252,9 @@ library PoolConfigLib {
                 PoolConfigConst.DECIMAL_DIFF_BITLENGTH
             );
 
-            // This is equivalent to `10**(18+decimalsDifference)` but this form optimizes for 18 decimal tokens.
-            scalingFactors[i] = FixedPoint.ONE * 10 ** decimalDiff;
+            // This is a "raw" factor, not a fixed point number. It should be applied using raw math to raw amounts
+            // instead of using FP multiplication.
+            scalingFactors[i] = 10 ** decimalDiff;
         }
 
         return scalingFactors;

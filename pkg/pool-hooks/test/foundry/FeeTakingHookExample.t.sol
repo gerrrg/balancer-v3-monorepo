@@ -51,9 +51,15 @@ contract FeeTakingHookExampleTest is BaseVaultTest {
     }
 
     // Overrides pool creation to set liquidityManagement (disables unbalanced liquidity)
-    function _createPool(address[] memory tokens, string memory label) internal override returns (address) {
-        PoolMock newPool = new PoolMock(IVault(address(vault)), "ERC20 Pool", "ERC20POOL");
-        vm.label(address(newPool), label);
+    function _createPool(
+        address[] memory tokens,
+        string memory label
+    ) internal override returns (address newPool, bytes memory poolArgs) {
+        string memory name = "ERC20 Pool";
+        string memory symbol = "ERC20POOL";
+
+        newPool = address(deployPoolMock(IVault(address(vault)), name, symbol));
+        vm.label(newPool, label);
 
         PoolRoleAccounts memory roleAccounts;
         roleAccounts.poolCreator = lp;
@@ -62,17 +68,17 @@ contract FeeTakingHookExampleTest is BaseVaultTest {
         liquidityManagement.disableUnbalancedLiquidity = true;
 
         vm.expectEmit();
-        emit FeeTakingHookExample.FeeTakingHookExampleRegistered(poolHooksContract, address(newPool));
+        emit FeeTakingHookExample.FeeTakingHookExampleRegistered(poolHooksContract, newPool);
 
         factoryMock.registerPool(
-            address(newPool),
+            newPool,
             vault.buildTokenConfig(tokens.asIERC20()),
             roleAccounts,
             poolHooksContract,
             liquidityManagement
         );
 
-        return address(newPool);
+        poolArgs = abi.encode(vault, name, symbol);
     }
 
     function testFeeSwapExactIn__Fuzz(uint256 swapAmount, uint64 hookFeePercentage) public {
@@ -87,7 +93,7 @@ contract FeeTakingHookExampleTest is BaseVaultTest {
 
         vm.prank(lp);
         FeeTakingHookExample(poolHooksContract).setHookSwapFeePercentage(hookFeePercentage);
-        uint256 hookFee = swapAmount.mulDown(hookFeePercentage);
+        uint256 hookFee = swapAmount.mulUp(hookFeePercentage);
 
         BaseVaultTest.Balances memory balancesBefore = getBalances(bob);
 
@@ -155,7 +161,7 @@ contract FeeTakingHookExampleTest is BaseVaultTest {
 
         vm.prank(lp);
         FeeTakingHookExample(poolHooksContract).setHookSwapFeePercentage(hookFeePercentage);
-        uint256 hookFee = swapAmount.mulDown(hookFeePercentage);
+        uint256 hookFee = swapAmount.mulUp(hookFeePercentage);
 
         BaseVaultTest.Balances memory balancesBefore = getBalances(bob);
 
@@ -249,7 +255,7 @@ contract FeeTakingHookExampleTest is BaseVaultTest {
             expectedBptOut
         );
         uint256 actualAmountIn = actualAmountsIn[daiIdx]; // Proportional, so doesn't matter which token
-        uint256 hookFee = actualAmountIn.mulDown(hookFeePercentage);
+        uint256 hookFee = actualAmountIn.mulUp(hookFeePercentage);
 
         uint256[] memory expectedBalances = [poolInitAmount + actualAmountIn, poolInitAmount + actualAmountIn]
             .toMemoryArray();
@@ -323,7 +329,7 @@ contract FeeTakingHookExampleTest is BaseVaultTest {
             expectedBptIn
         );
         uint256 actualAmountOut = actualAmountsOut[usdcIdx];
-        uint256 hookFee = actualAmountOut.mulDown(hookFeePercentage);
+        uint256 hookFee = actualAmountOut.mulUp(hookFeePercentage);
 
         uint256[] memory expectedBalances = [2 * poolInitAmount - actualAmountOut, 2 * poolInitAmount - actualAmountOut]
             .toMemoryArray();

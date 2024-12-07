@@ -76,8 +76,12 @@ contract ERC4626TestToken is ERC4626, IRateProvider {
         uint256 underlyingDelta;
         uint256 wrappedDelta;
 
+        // If the rate stays the same there is nothing to do.
         // If rate is lower than current rate, inflates the total supply. Else, inflates the underlying amount.
-        if (newRate < ERC4626TestToken(address(this)).getRate()) {
+        uint256 currentRate = ERC4626TestToken(address(this)).getRate();
+        if (currentRate == newRate) {
+            return;
+        } else if (newRate < currentRate) {
             uint256 newTotalWrappedAmount = totalUnderlyingAmount.divDown(newRate);
             wrappedDelta = newTotalWrappedAmount - totalWrappedAmount;
         } else {
@@ -117,8 +121,10 @@ contract ERC4626TestToken is ERC4626, IRateProvider {
 
     function deposit(uint256 assets, address receiver) public override returns (uint256) {
         if (_maliciousWrapper) {
-            // A malicious wrapper does nothing so it can use the approval to drain the vault.
-            return 0;
+            // A malicious wrapper does not take underlying tokens to use the Vault approval later.
+            uint256 sharesToReturn = previewDeposit(assets);
+            _mint(receiver, sharesToReturn);
+            return sharesToReturn;
         }
 
         return super.deposit(assets, receiver);
